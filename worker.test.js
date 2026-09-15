@@ -26,7 +26,7 @@ test('UI says what important numbers mean and hides advanced controls',()=>{
   assert.match(html, /1\. Price now/);
   assert.match(html, /2\. If I run dryer now/);
   assert.match(html, /€\/kWh/);
-  assert.match(html, /Price now:<\/b>/);
+  assert.match(html, /price now:<\/b>/);
   assert.match(html, /€ for 1 kWh/);
   assert.match(html, /will cost about <b>/);
   assert.match(html, /Best times to run dryer/);
@@ -42,6 +42,10 @@ test('chart has understandable axes, legend, and now marker',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   assert.match(html, /Price picture/);
   assert.match(html, /Left to right = time\. Bottom = cheap\. Top = expensive\. White line = now\./);
+  assert.match(html, /Live Latvia price ▾/);
+  assert.match(html, /data-area="lt"/);
+  assert.match(html, /selectedArea/);
+  assert.match(html, /area:selectedArea/);
   assert.match(html, /Price €\/kWh/);
   assert.match(html, /Time \(Riga\)/);
   assert.match(html, /Cheap/);
