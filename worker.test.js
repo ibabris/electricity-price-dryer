@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runCost, bestWindows, currentRow, cents } from './core.js';
+import { readFileSync } from 'node:fs';
 const rows = Array.from({length:12},(_,i)=>({timestamp:1000+i*900,price:[200,180,60,50,40,70,100,220,300,90,80,70][i]}));
 test('dryer run cost uses 15-minute intervals and VAT/adders',()=>{
   const r=runCost(rows,0,{durationHours:1.5,powerKw:2.5,addersEurPerKwh:0.16,vatPct:21});
@@ -18,4 +19,16 @@ test('best window picks contiguous cheapest 1.5 hours',()=>{
 });
 test('current row finds 15-minute interval',()=>{
   assert.equal(currentRow(rows, (1000+3*900+20)*1000).price,50);
+});
+
+test('UI says what important numbers mean and hides advanced controls',()=>{
+  const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.match(html, /1\. Price now/);
+  assert.match(html, /2\. If I run dryer now/);
+  assert.match(html, /Running a <b>/);
+  assert.match(html, /will cost about <b>/);
+  assert.match(html, /Best times to run dryer/);
+  assert.match(html, /It would cost about <b>/);
+  assert.match(html, /For experienced users/);
+  assert.match(html, /\.advanced\{display:none/);
 });
