@@ -7,7 +7,7 @@ test('dryer run cost uses 15-minute intervals and VAT/adders',()=>{
   const r=runCost(rows,0,{durationHours:1.5,powerKw:2.5,addersEurPerKwh:0.16,vatPct:21});
   assert.equal(r.intervals,6);
   assert.equal(Number(r.energyKwh.toFixed(2)),3.75);
-  assert.equal(cents(r.market),38); // avg 100 €/MWh = 0.10 €\/kWh * 3.75
+  assert.equal(cents(r.market),38); // avg 100 €/MWh = 0.10 €/kWh * 3.75
   assert.equal(cents(r.adders),60);
   assert.equal(cents(r.total),118);
 });
@@ -21,34 +21,43 @@ test('current row finds 15-minute interval',()=>{
   assert.equal(currentRow(rows, (1000+3*900+20)*1000).price,50);
 });
 
-test('UI says what important numbers mean and hides advanced controls',()=>{
+test('all Elering markets are included with flags and default language',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
-  assert.match(html, /1\. Price now/);
-  assert.match(html, /2\. If I run dryer now/);
-  assert.match(html, /€\/kWh/);
-  assert.match(html, /price now:<\/b>/);
-  assert.match(html, /€ for 1 kWh/);
-  assert.match(html, /will cost about <b>/);
-  assert.match(html, /Best times to run dryer/);
-  assert.match(html, /It would cost about <b>/);
-  assert.match(html, /For experienced users/);
-  assert.match(html, /3\. Price gauge/);
-  assert.match(html, /same time of day from the last 12 months and last 3 months/);
-  assert.match(html, /higher than .*same-time prices/);
-  assert.match(html, /\.advanced\{display:none/);
+  for (const [code, flag] of Object.entries({lv:'🇱🇻',lt:'🇱🇹',ee:'🇪🇪',fi:'🇫🇮'})) {
+    assert.match(html, new RegExp(`${code}: \\{ name:`));
+    assert.ok(html.includes(flag));
+  }
+  assert.match(html, /selectedMarket = localStorage\.getItem\('market'\)/);
+  assert.match(html, /localStorage\.setItem\('market'/);
+  assert.match(html, /MARKETS\[selectedMarket\]\.lang/);
 });
 
-test('chart has understandable axes, legend, and now marker',()=>{
+test('supported languages are registered and remembered',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
-  assert.match(html, /Price picture/);
-  assert.match(html, /Left to right = time\. Bottom = cheap\. Top = expensive\. White line = now\./);
-  assert.match(html, /Live Latvia price ▾/);
-  assert.match(html, /data-area="lt"/);
-  assert.match(html, /selectedArea/);
-  assert.match(html, /area:selectedArea/);
+  for (const code of ['lv','ee','lt','ru','en']) assert.match(html, new RegExp(`${code}:`));
+  assert.match(html, /const LANGS = \{lv:'LV',ee:'EE',lt:'LT',ru:'RU',en:'EN'\}/);
+  assert.match(html, /localStorage\.getItem\('lang'\)/);
+  assert.match(html, /localStorage\.setItem\('lang'/);
+  assert.match(html, /document\.documentElement\.lang = lang/);
+});
+
+test('UI remains simple with hidden advanced controls and consumer units',()=>{
+  const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.match(html, /priceLabel:'1\. Price now'/);
+  assert.match(html, /costLabel:'2\. If I run dryer now'/);
+  assert.match(html, /€\/kWh/);
+  assert.match(html, /for 1 kWh/);
+  assert.match(html, /Best times to run dryer/);
+  assert.match(html, /It would cost about/);
+  assert.match(html, /advanced\{display:none/);
+});
+
+test('chart has understandable local-day axis and now marker',()=>{
+  const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
+  assert.match(html, /chartExplain:'Left to right = time\. Bottom = cheap\. Top = expensive\. White line = now\.'/);
   assert.match(html, /Price €\/kWh/);
   assert.match(html, /Time \(Riga\)/);
-  assert.match(html, /Cheap/);
-  assert.match(html, /Expensive/);
+  assert.match(html, /00:00/);
+  assert.match(html, /24:00/);
   assert.match(html, /chartNow/);
 });

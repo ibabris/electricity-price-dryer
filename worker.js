@@ -2,8 +2,13 @@ import { DEFAULTS, summarize } from './core.js';
 
 const SOURCE = 'https://dashboard.elering.ee/api/nps/price';
 const CACHE_SECONDS = 60;
-const AREAS = Object.freeze({ lv: 'Latvia', lt: 'Lithuania', ee: 'Estonia', fi: 'Finland' });
-function normalizeArea(area){ const key = String(area || 'lv').toLowerCase(); return AREAS[key] ? key : 'lv'; }
+const MARKETS = Object.freeze({
+  lv: { name:{en:'Latvia',lv:'Latvija',lt:'Latvija',ee:'Läti',ru:'Латвия'}, flag:'🇱🇻', lang:'lv' },
+  lt: { name:{en:'Lithuania',lv:'Lietuva',lt:'Lietuva',ee:'Leedu',ru:'Литва'}, flag:'🇱🇹', lang:'lt' },
+  ee: { name:{en:'Estonia',lv:'Igaunija',lt:'Estija',ee:'Eesti',ru:'Эстония'}, flag:'🇪🇪', lang:'ee' },
+  fi: { name:{en:'Finland',lv:'Somija',lt:'Suomija',ee:'Soome',ru:'Финляндия'}, flag:'🇫🇮', lang:'en' }
+});
+function normalizeArea(area){ const key = String(area || 'lv').toLowerCase(); return MARKETS[key] ? key : 'lv'; }
 
 function priceUrl(){
   const now = new Date();
@@ -11,30 +16,23 @@ function priceUrl(){
   const end = new Date(now.getTime() + 36 * 3600 * 1000);
   return `${SOURCE}?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`;
 }
-
 function historyUrl(days){
   const now = new Date();
   const start = new Date(now.getTime() - days * 24 * 3600 * 1000);
   return `${SOURCE}?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(now.toISOString())}`;
 }
-
-async function fetchPrices(area = 'lv'){
-  const res = await fetch(priceUrl(), { headers: { 'user-agent':'Electricity price dryer helper' }, cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true } });
+async function fetchMarketRows(url, area){
+  const res = await fetch(url, { headers: { 'user-agent':'Electricity price dryer helper' }, cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true } });
   if(!res.ok) throw new Error(`price_source_${res.status}`);
   const json = await res.json();
   const selected = json?.data?.[normalizeArea(area)];
   if(!Array.isArray(selected) || !selected.length) throw new Error('price_source_empty');
   return selected.map(x => ({ timestamp: Number(x.timestamp), price: Number(x.price) })).filter(x => Number.isFinite(x.timestamp) && Number.isFinite(x.price));
 }
-
+const fetchPrices = area => fetchMarketRows(priceUrl(), area);
 async function fetchHistory(days, area = 'lv'){
-  const res = await fetch(historyUrl(days), { headers: { 'user-agent':'Electricity price dryer helper' }, cf: { cacheTtl: 600, cacheEverything: true } });
-  if(!res.ok) return [];
-  const json = await res.json();
-  const selected = json?.data?.[normalizeArea(area)];
-  return Array.isArray(selected) ? selected.map(x => ({ timestamp: Number(x.timestamp), price: Number(x.price) })).filter(x => Number.isFinite(x.timestamp) && Number.isFinite(x.price)) : [];
+  try { return await fetchMarketRows(historyUrl(days), area); } catch { return []; }
 }
-
 const slotFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Riga', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
 function slotKey(ts){
   const parts = Object.fromEntries(slotFmt.formatToParts(new Date(ts * 1000)).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
@@ -43,10 +41,9 @@ function slotKey(ts){
 function avg(rows){ return rows.length ? rows.reduce((a,r)=>a+Number(r.price || 0),0) / rows.length : 0; }
 function percentile(value, rows){
   if(!rows.length) return 50;
-  const below = rows.filter(r => Number(r.price || 0) <= value).length;
-  return Math.round((below / rows.length) * 100);
+  return Math.round((rows.filter(r => Number(r.price || 0) <= value).length / rows.length) * 100);
 }
-function gaugeLabel(p){ return p < 10 ? 'Very low' : p < 30 ? 'Low' : p < 70 ? 'Normal' : p < 90 ? 'High' : 'Very high'; }
+function gaugeLabel(p){ return p < 10 ? 'veryLow' : p < 30 ? 'low' : p < 70 ? 'normal' : p < 90 ? 'high' : 'veryHigh'; }
 function buildBenchmark(current, hist90, hist365){
   if(!current) return null;
   const key = slotKey(current.timestamp);
@@ -55,7 +52,6 @@ function buildBenchmark(current, hist90, hist365){
   const pct12 = percentile(current.price, same12m);
   return { slotMinutes:key, currentKwh: current.price / 1000, avg3mKwh: avg(same3m) / 1000, avg12mKwh: avg(same12m) / 1000, percentile12m:pct12, label:gaugeLabel(pct12), sample3m:same3m.length, sample12m:same12m.length };
 }
-
 function apiPayload(rows, url, hist90 = [], hist365 = []){
   const q = url.searchParams;
   const area = normalizeArea(q.get('area'));
@@ -66,12 +62,10 @@ function apiPayload(rows, url, hist90 = [], hist365 = []){
     vatPct: Number(q.get('vat') || DEFAULTS.vatPct)
   };
   const s = summarize(rows, opts);
-  return { ok:true, source:'Elering / Nord Pool regional electricity prices', sourceUrl:SOURCE, updatedAt:new Date().toISOString(), timezone:'Europe/Riga', intervalMinutes:15, area, areaName: AREAS[area], areas: AREAS, opts, benchmarks: buildBenchmark(s.current, hist90, hist365), ...s };
+  return { ok:true, source:'Elering / Nord Pool regional electricity prices', sourceUrl:SOURCE, updatedAt:new Date().toISOString(), timezone:'Europe/Riga', intervalMinutes:15, area, market: MARKETS[area], markets: MARKETS, opts, benchmarks: buildBenchmark(s.current, hist90, hist365), ...s };
 }
-
 function json(data,status=200){ return new Response(JSON.stringify(data), { status, headers:{ 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' } }); }
 function page(){ return new Response(HTML, { headers:{ 'content-type':'text/html; charset=utf-8', 'cache-control':'public, max-age=120' } }); }
-
 export default { async fetch(request){
   const url = new URL(request.url);
   if(url.pathname === '/api/prices'){
@@ -86,138 +80,159 @@ const HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Dry clothes cheaper — Latvia electricity now</title>
+<title>Dry clothes cheaper</title>
 <style>
-:root{--bg:#f3f7fb;--ink:#102033;--muted:#637287;--card:#fff;--line:#dce6f1;--blue:#0b65d8;--green:#0e9f6e;--red:#dc2626;--amber:#b7791f;--softBlue:#eaf4ff;--softGreen:#e8fff3;--shadow:0 20px 60px rgba(16,32,51,.14)}*{box-sizing:border-box}html{background:#eaf3fb}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,"Segoe UI",sans-serif;background:linear-gradient(180deg,#f8fbff 0,#edf6ff 48%,#f6f8fb 100%);color:var(--ink);min-height:100vh}main{width:min(720px,100%);margin:0 auto;padding:env(safe-area-inset-top) 14px 28px}.appTop{position:sticky;top:0;z-index:5;margin:0 -14px 10px;padding:10px 14px 8px;background:rgba(248,251,255,.88);backdrop-filter:blur(18px);border-bottom:1px solid rgba(220,230,241,.7)}.topLine{display:flex;align-items:center;justify-content:space-between;gap:8px}.brand{display:flex;align-items:center;gap:9px;font-weight:900}.bolt{width:38px;height:38px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(135deg,#0b65d8,#27c0ff);color:#fff;box-shadow:0 8px 22px rgba(11,101,216,.25)}.live{font-size:12px;font-weight:800;color:var(--green);background:#e8fff3;border:1px solid #baf2d1;border-radius:999px;padding:7px 10px}.regionBtn{appearance:none;cursor:pointer;font-family:inherit}.regionSheet{position:absolute;right:14px;top:58px;background:#fff;border:1px solid #dce6f1;border-radius:18px;box-shadow:0 18px 44px rgba(16,32,51,.18);padding:6px;display:grid;gap:4px;z-index:10}.regionSheet[hidden]{display:none}.regionSheet button{appearance:none;border:0;background:#fff;color:#102033;text-align:left;border-radius:13px;padding:10px 42px 10px 12px;font-weight:900;font-size:15px}.regionSheet button.active,.regionSheet button:hover{background:#eaf4ff;color:#0b65d8}.subtitle{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.25}.card{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:16px;margin:12px 0}.heroCard{background:linear-gradient(180deg,#ffffff 0,#eef8ff 100%)}.label{font-size:13px;font-weight:900;color:#4b6078;text-transform:uppercase;letter-spacing:.06em}.answer{font-weight:950;letter-spacing:-.04em}.priceNow{display:flex;align-items:end;gap:6px;margin-top:5px;min-width:0;flex-wrap:wrap}.priceNumber{font-size:clamp(62px,20vw,126px);line-height:.82;color:#06162b}.priceUnit{font-size:clamp(20px,5.5vw,25px);font-weight:950;margin-bottom:8px;color:#27445f}.plain{font-size:19px;line-height:1.28;margin:12px 0 0;color:#294259}.plain b{color:#07182e}.mood{display:inline-flex;margin-top:12px;border-radius:999px;padding:8px 12px;font-weight:900;font-size:14px}.mood.good{color:#05603a;background:#d9ffe9}.mood.ok{color:#794b05;background:#fff4cc}.mood.bad{color:#991b1b;background:#ffe2e2}.costCard{background:linear-gradient(160deg,#063b73 0,#0b65d8 62%,#13a0dd 100%);color:#fff;border:0}.costCard .label{color:#dbeafe}.costLine{font-size:clamp(34px,10vw,68px);line-height:.95;margin:8px 0 4px}.costLine small{font-size:.42em;letter-spacing:0}.costText{font-size:20px;line-height:1.25;margin:10px 0 0;color:#eef6ff}.gaugeTitle{display:flex;justify-content:space-between;align-items:end;gap:10px;margin:8px 0 10px}.gaugeTitle span:first-child{font-size:34px;font-weight:950;letter-spacing:-.04em}.gaugeTitle span:last-child{font-size:15px;font-weight:950;color:#52657b}.gaugeRail{position:relative;height:24px;border-radius:999px;background:linear-gradient(90deg,#14b86a 0,#a3e635 25%,#facc15 52%,#fb923c 75%,#ef4444 100%);box-shadow:inset 0 0 0 1px rgba(16,32,51,.12)}.gaugeNeedle{position:absolute;top:-5px;width:6px;height:34px;border-radius:999px;background:#102033;box-shadow:0 3px 10px rgba(16,32,51,.35);left:50%;transform:translateX(-50%)}.gaugeScale{display:flex;justify-content:space-between;color:#52657b;font-weight:900;font-size:12px;margin-top:7px}.bestTitle{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.bestTitle h2{margin:0;font-size:24px;letter-spacing:-.03em}.window{display:grid;grid-template-columns:auto 1fr;gap:11px;padding:13px 0;border-top:1px solid #e7eef6}.window:first-child{border-top:0}.rank{width:40px;height:40px;border-radius:15px;background:var(--softGreen);color:var(--green);display:grid;place-items:center;font-weight:950}.when{font-size:22px;font-weight:950;letter-spacing:-.03em}.meaning{font-size:16px;margin-top:3px;color:#334e68;line-height:1.28}.priceChip{display:inline-flex;margin-top:8px;border-radius:12px;background:#effaf3;color:#067647;padding:7px 10px;font-size:15px;font-weight:900}.advancedToggle{width:100%;border:0;border-radius:18px;padding:14px 16px;margin:4px 0 0;text-align:left;background:#16243a;color:#fff;font-size:16px;font-weight:900;display:flex;justify-content:space-between;align-items:center}.advanced{display:none;margin-top:10px}.advanced.open{display:block}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{border:1px solid var(--line);background:#fff;border-radius:18px;padding:11px}.field label{display:block;font-size:12px;color:#65758a;font-weight:900;margin-bottom:5px}.field input{width:100%;border:0;outline:0;font-size:24px;font-weight:950;color:var(--ink);background:transparent}.miniGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.mini{border:1px solid var(--line);border-radius:18px;background:#fff;padding:10px}.mini b{display:block;font-size:19px}.mini span{display:block;font-size:12px;color:var(--muted);font-weight:800;margin-top:3px}.chartCard h2{margin:0;font-size:22px;letter-spacing:-.03em}.chartCard p{margin:4px 0 0;color:#52657b;font-size:14px}.chartHead{display:flex;justify-content:space-between;gap:10px;align-items:start}.chartNow{background:#102033;color:#fff;border-radius:999px;padding:8px 10px;font-weight:950;font-size:13px;white-space:nowrap}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.legend span{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:900;color:#405671;background:#f4f8fc;border:1px solid #e0e8f1;border-radius:999px;padding:7px 9px}.leg{width:12px;height:12px;border-radius:4px;display:inline-block}.leg.cheap{background:#2dd47a}.leg.middle{background:#54b6ff}.leg.high{background:#ff6868}.chartWrap{display:grid;grid-template-columns:54px 1fr;gap:8px;align-items:stretch}.yAxis{display:flex;flex-direction:column;justify-content:space-between;align-items:end;text-align:right;color:#52657b;font-size:11px;font-weight:900;padding:2px 0 24px}.yAxis span:nth-child(2){writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:#102033}.chartArea{min-width:0}.chart{height:165px;display:flex;align-items:end;gap:1px;border-radius:20px;background:linear-gradient(180deg,#fff1f1 0,#eef7ff 48%,#eafff4 100%);padding:10px;overflow:hidden;border:1px solid #d8e4ef}.bar{flex:1;min-width:0;border-radius:6px 6px 0 0;background:#54b6ff}.bar.good{background:#2dd47a}.bar.bad{background:#ff6868}.bar.now{box-shadow:0 0 0 2px #102033,0 0 0 5px rgba(255,255,255,.95)}.xAxis{display:flex;justify-content:space-between;gap:8px;color:#52657b;font-size:11px;font-weight:900;padding:6px 4px 0}.xAxis span:nth-child(2){color:#102033}.note{color:var(--muted);font-size:13px;line-height:1.35}.source{font-size:12px;color:#64748b;text-align:center;margin:16px 4px}.source a{color:#0b65d8}#statusLine{font-size:13px;color:#64748b;margin-top:8px}@media(min-width:760px){main{padding-top:18px}.desktopGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}.desktopGrid .card{margin:0}.bestAndAdvanced{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;align-items:start}.priceNumber{font-size:118px}.costLine{font-size:64px}}@media(max-width:420px){main{padding-left:10px;padding-right:10px}.appTop{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{border-radius:24px;padding:14px}.controls{grid-template-columns:1fr 1fr;gap:8px}.miniGrid{grid-template-columns:1fr}.when{font-size:20px}.costText,.plain{font-size:18px}.field input{font-size:22px}}
+:root{--bg:#f3f7fb;--ink:#102033;--muted:#637287;--line:#dce6f1;--green:#0e9f6e;--shadow:0 20px 60px rgba(16,32,51,.14)}*{box-sizing:border-box}html{background:#eaf3fb}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,"Segoe UI",sans-serif;background:linear-gradient(180deg,#f8fbff 0,#edf6ff 50%,#f6f8fb 100%);color:var(--ink);min-height:100vh}main{width:min(720px,100%);margin:0 auto;padding:env(safe-area-inset-top) 14px 28px}.appTop{position:sticky;top:0;z-index:5;margin:0 -14px 10px;padding:10px 14px 8px;background:rgba(248,251,255,.9);backdrop-filter:blur(18px);border-bottom:1px solid rgba(220,230,241,.7)}.topLine{display:flex;align-items:center;justify-content:space-between;gap:8px}.brand{display:flex;align-items:center;gap:9px;font-weight:950;font-size:22px;letter-spacing:-.04em}.bolt{width:38px;height:38px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(135deg,#0b65d8,#27c0ff);color:#fff;box-shadow:0 8px 22px rgba(11,101,216,.25)}.pill{appearance:none;font-family:inherit;font-size:12px;font-weight:900;color:var(--green);background:#e8fff3;border:1px solid #baf2d1;border-radius:999px;padding:8px 10px;cursor:pointer;white-space:nowrap}.subtitle{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.25}.sheet{position:absolute;right:14px;top:58px;background:#fff;border:1px solid #dce6f1;border-radius:18px;box-shadow:0 18px 44px rgba(16,32,51,.18);padding:6px;display:grid;gap:4px;z-index:10;min-width:190px}.sheet[hidden]{display:none}.sheet button{appearance:none;border:0;background:#fff;color:#102033;text-align:left;border-radius:13px;padding:11px 12px;font-weight:950;font-size:16px}.sheet button.active,.sheet button:hover{background:#eaf4ff;color:#0b65d8}.langWrap{display:flex;gap:6px;margin-top:8px;overflow:auto;padding-bottom:2px}.langBtn{appearance:none;border:1px solid #dce6f1;border-radius:999px;background:#fff;color:#405671;padding:6px 10px;font-weight:950}.langBtn.active{background:#102033;color:#fff}.card{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:16px;margin:12px 0}.heroCard{background:linear-gradient(180deg,#ffffff 0,#eef8ff 100%)}.label{font-size:13px;font-weight:950;color:#4b6078;text-transform:uppercase;letter-spacing:.06em}.answer{font-weight:950;letter-spacing:-.04em}.priceNow{display:flex;align-items:end;gap:6px;margin-top:5px;min-width:0;flex-wrap:wrap}.priceNumber{font-size:clamp(62px,20vw,126px);line-height:.82;color:#06162b}.priceUnit{font-size:clamp(20px,5.5vw,25px);font-weight:950;margin-bottom:8px;color:#27445f}.plain{font-size:19px;line-height:1.28;margin:12px 0 0;color:#294259}.plain b{color:#07182e}.mood{display:inline-flex;margin-top:12px;border-radius:999px;padding:8px 12px;font-weight:900;font-size:14px}.mood.good{color:#05603a;background:#d9ffe9}.mood.ok{color:#794b05;background:#fff4cc}.mood.bad{color:#991b1b;background:#ffe2e2}.costCard{background:linear-gradient(160deg,#063b73 0,#0b65d8 62%,#13a0dd 100%);color:#fff;border:0}.costCard .label{color:#dbeafe}.costLine{font-size:clamp(34px,10vw,68px);line-height:.95;margin:8px 0 4px}.costText{font-size:20px;line-height:1.25;margin:10px 0 0;color:#eef6ff}.gaugeTitle{display:flex;justify-content:space-between;align-items:end;gap:10px;margin:8px 0 10px}.gaugeTitle span:first-child{font-size:34px;font-weight:950;letter-spacing:-.04em}.gaugeTitle span:last-child{font-size:15px;font-weight:950;color:#52657b}.gaugeRail{position:relative;height:24px;border-radius:999px;background:linear-gradient(90deg,#14b86a 0,#a3e635 25%,#facc15 52%,#fb923c 75%,#ef4444 100%);box-shadow:inset 0 0 0 1px rgba(16,32,51,.12)}.gaugeNeedle{position:absolute;top:-5px;width:6px;height:34px;border-radius:999px;background:#102033;box-shadow:0 3px 10px rgba(16,32,51,.35);left:50%;transform:translateX(-50%)}.gaugeScale{display:flex;justify-content:space-between;color:#52657b;font-weight:900;font-size:12px;margin-top:7px}.bestTitle{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.bestTitle h2{margin:0;font-size:24px;letter-spacing:-.03em}.window{display:grid;grid-template-columns:auto 1fr;gap:11px;padding:13px 0;border-top:1px solid #e7eef6}.window:first-child{border-top:0}.rank{width:40px;height:40px;border-radius:15px;background:#e8fff3;color:#0e9f6e;display:grid;place-items:center;font-weight:950}.when{font-size:22px;font-weight:950;letter-spacing:-.03em}.meaning{font-size:16px;margin-top:3px;color:#334e68;line-height:1.28}.priceChip{display:inline-flex;margin-top:8px;border-radius:12px;background:#effaf3;color:#067647;padding:7px 10px;font-size:15px;font-weight:900}.advancedToggle{width:100%;border:0;border-radius:18px;padding:14px 16px;margin:4px 0 0;text-align:left;background:#16243a;color:#fff;font-size:16px;font-weight:900;display:flex;justify-content:space-between;align-items:center}.advanced{display:none;margin-top:10px}.advanced.open{display:block}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{border:1px solid var(--line);background:#fff;border-radius:18px;padding:11px}.field label{display:block;font-size:12px;color:#65758a;font-weight:900;margin-bottom:5px}.field input{width:100%;border:0;outline:0;font-size:24px;font-weight:950;color:var(--ink);background:transparent}.miniGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.mini{border:1px solid var(--line);border-radius:18px;background:#fff;padding:10px}.mini b{display:block;font-size:19px}.mini span{display:block;font-size:12px;color:var(--muted);font-weight:800;margin-top:3px}.chartCard h2{margin:0;font-size:22px;letter-spacing:-.03em}.chartCard p{margin:4px 0 0;color:#52657b;font-size:14px}.chartHead{display:flex;justify-content:space-between;gap:10px;align-items:start}.chartNow{background:#102033;color:#fff;border-radius:999px;padding:8px 10px;font-weight:950;font-size:13px;white-space:nowrap}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.legend span{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:900;color:#405671;background:#f4f8fc;border:1px solid #e0e8f1;border-radius:999px;padding:7px 9px}.leg{width:12px;height:12px;border-radius:4px;display:inline-block}.cheap{background:#2dd47a}.middle{background:#54b6ff}.high{background:#ff6868}.chartWrap{display:grid;grid-template-columns:54px 1fr;gap:8px;align-items:stretch}.yAxis{display:flex;flex-direction:column;justify-content:space-between;align-items:end;text-align:right;color:#52657b;font-size:11px;font-weight:900;padding:2px 0 24px}.yAxis span:nth-child(2){writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:#102033}.chartArea{min-width:0}.chart{height:165px;display:flex;align-items:end;gap:1px;border-radius:20px;background:linear-gradient(180deg,#fff1f1 0,#eef7ff 48%,#eafff4 100%);padding:10px;overflow:hidden;border:1px solid #d8e4ef}.bar{flex:1;min-width:0;border-radius:6px 6px 0 0;background:#54b6ff}.bar.good{background:#2dd47a}.bar.bad{background:#ff6868}.bar.now{box-shadow:0 0 0 2px #102033,0 0 0 5px rgba(255,255,255,.95)}.xAxis{display:flex;justify-content:space-between;gap:8px;color:#52657b;font-size:11px;font-weight:900;padding:6px 4px 0}.xAxis span:nth-child(2){color:#102033}.note{color:var(--muted);font-size:13px;line-height:1.35}.source{font-size:12px;color:#64748b;text-align:center;margin:16px 4px}.source a{color:#0b65d8}#statusLine{font-size:13px;color:#64748b;margin-top:8px}@media(min-width:760px){main{padding-top:18px}.desktopGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}.desktopGrid .card{margin:0}.bestAndAdvanced{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;align-items:start}.priceNumber{font-size:118px}.costLine{font-size:64px}}@media(max-width:420px){main{padding-left:10px;padding-right:10px}.appTop{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{border-radius:24px;padding:14px}.controls{grid-template-columns:1fr 1fr;gap:8px}.miniGrid{grid-template-columns:1fr}.when{font-size:20px}.costText,.plain{font-size:18px}.field input{font-size:22px}.brand{font-size:20px}}
 </style>
 </head>
 <body>
 <main>
   <header class="appTop">
-    <div class="topLine"><div class="brand"><div class="bolt">⚡</div><div>Dry clothes cheaper</div></div><button id="regionBtn" class="live regionBtn" type="button">Live Latvia price ▾</button></div>
-    <div id="regionSheet" class="regionSheet" hidden><button data-area="lv">Latvia</button><button data-area="lt">Lithuania</button><button data-area="ee">Estonia</button><button data-area="fi">Finland</button></div>
-    <p class="subtitle">Simple answer first. Advanced details are hidden unless you want them.</p>
+    <div class="topLine"><div class="brand"><div class="bolt">⚡</div><div data-i18n="brand">Dry clothes cheaper</div></div><button id="marketBtn" class="pill" type="button">🇱🇻 Latvia ▾</button></div>
+    <div id="marketSheet" class="sheet" hidden></div>
+    <div class="langWrap" id="langWrap"></div>
+    <p id="subtitle" class="subtitle"></p>
   </header>
 
   <section class="desktopGrid">
     <article class="card heroCard">
-      <div class="label">1. Price now</div>
+      <div id="priceLabel" class="label"></div>
       <div class="priceNow"><div id="price" class="answer priceNumber">—</div><div class="priceUnit">€/kWh</div></div>
-      <p id="pricePlain" class="plain">Loading price for 1 kWh…</p>
-      <div id="badge" class="mood ok">Checking if this is cheap or expensive</div>
+      <p id="pricePlain" class="plain"></p>
+      <div id="badge" class="mood ok"></div>
     </article>
 
     <article class="card costCard">
-      <div class="label">2. If I run dryer now</div>
+      <div id="costLabel" class="label"></div>
       <div id="costNow" class="answer costLine">— €</div>
-      <p id="costPlain" class="costText">Loading how much a 1.5 hour dryer run would cost now…</p>
+      <p id="costPlain" class="costText"></p>
     </article>
   </section>
 
   <section class="card gaugeCard">
-    <div class="label">3. Price gauge</div>
+    <div id="gaugeLabelTop" class="label"></div>
     <div class="gaugeTitle"><span id="gaugeLabel">—</span><span id="gaugePct">—</span></div>
-    <div class="gaugeRail"><div class="gaugeFill"></div><div id="gaugeNeedle" class="gaugeNeedle"></div></div>
-    <div class="gaugeScale"><span>Very low</span><span>Normal</span><span>Very high</span></div>
-    <p id="gaugePlain" class="plain">Comparing price now with the same time of day from the last 12 months and last 3 months…</p>
+    <div class="gaugeRail"><div id="gaugeNeedle" class="gaugeNeedle"></div></div>
+    <div class="gaugeScale"><span id="scaleLow"></span><span id="scaleNormal"></span><span id="scaleHigh"></span></div>
+    <p id="gaugePlain" class="plain"></p>
   </section>
 
   <section class="bestAndAdvanced">
     <article class="card">
-      <div class="bestTitle"><h2>Best times to run dryer</h2><span class="live">Cheapest first</span></div>
-      <div id="windows"><div class="note">Loading the cheapest 1.5 hour windows…</div></div>
+      <div class="bestTitle"><h2 id="bestTitle"></h2><span id="cheapestTag" class="pill"></span></div>
+      <div id="windows"><div class="note">Loading…</div></div>
     </article>
 
     <article>
-      <button id="advancedBtn" class="advancedToggle" type="button">For experienced users <span>Show</span></button>
+      <button id="advancedBtn" class="advancedToggle" type="button"><span id="advancedTitle"></span><span id="advancedState"></span></button>
       <div id="advanced" class="advanced card">
         <div class="controls">
-          <div class="field"><label>Dryer power</label><input id="kw" type="number" min="0.1" step="0.1" value="2.5"><div class="note">kW, example: 2.5</div></div>
-          <div class="field"><label>Running time</label><input id="duration" type="number" min="0.25" step="0.25" value="1.5"><div class="note">hours, example: 1.5</div></div>
-          <div class="field"><label>Extra fees</label><input id="adders" type="number" min="0" step="0.01" value="0.16"><div class="note">€/kWh for network + seller</div></div>
-          <div class="field"><label>VAT</label><input id="vat" type="number" min="0" step="1" value="21"><div class="note">%, example: 21</div></div>
+          <div class="field"><label id="kwLabel"></label><input id="kw" type="number" min="0.1" step="0.1" value="2.5"><div id="kwNote" class="note"></div></div>
+          <div class="field"><label id="durationLabel"></label><input id="duration" type="number" min="0.25" step="0.25" value="1.5"><div id="durationNote" class="note"></div></div>
+          <div class="field"><label id="addersLabel"></label><input id="adders" type="number" min="0" step="0.01" value="0.16"><div id="addersNote" class="note"></div></div>
+          <div class="field"><label id="vatLabel"></label><input id="vat" type="number" min="0" step="1" value="21"><div id="vatNote" class="note"></div></div>
         </div>
         <div class="miniGrid">
-          <div class="mini"><b id="minp">— €/kWh</b><span>cheapest price for 1 kWh</span></div>
-          <div class="mini"><b id="avgp">— €/kWh</b><span>average price for 1 kWh during dryer run now</span></div>
-          <div class="mini"><b id="maxp">— €/kWh</b><span>most expensive price for 1 kWh</span></div>
+          <div class="mini"><b id="minp">— €/kWh</b><span id="minpText"></span></div>
+          <div class="mini"><b id="avgp">— €/kWh</b><span id="avgpText"></span></div>
+          <div class="mini"><b id="maxp">— €/kWh</b><span id="maxpText"></span></div>
         </div>
-        <p id="costBreakdown" class="note">Advanced cost split loading…</p>
-        <div id="statusLine">Live data loading…</div>
+        <p id="costBreakdown" class="note"></p>
+        <div id="statusLine"></div>
       </div>
     </article>
   </section>
 
   <section class="card chartCard">
-    <div class="chartHead"><div><h2>Price picture</h2><p>Left to right = time. Bottom = cheap. Top = expensive. White line = now.</p></div><div class="chartNow" id="chartNow">Now</div></div>
-    <div class="legend"><span><i class="leg cheap"></i>Cheap</span><span><i class="leg middle"></i>Middle</span><span><i class="leg high"></i>Expensive</span></div>
+    <div class="chartHead"><div><h2 id="chartTitle"></h2><p id="chartExplain"></p></div><div class="chartNow" id="chartNow">Now</div></div>
+    <div class="legend"><span><i class="leg cheap"></i><b id="legendCheap"></b></span><span><i class="leg middle"></i><b id="legendMiddle"></b></span><span><i class="leg high"></i><b id="legendHigh"></b></span></div>
     <div class="chartWrap">
       <div class="yAxis"><span id="yHigh">High</span><span>Price €/kWh</span><span id="yLow">Low</span></div>
-      <div class="chartArea"><div id="chart" class="chart" aria-label="Today electricity price chart"></div><div class="xAxis"><span id="xStart">00:00</span><span>Time (Riga)</span><span id="xEnd">24:00</span></div></div>
+      <div class="chartArea"><div id="chart" class="chart" aria-label="Today electricity price chart"></div><div class="xAxis"><span id="xStart">00:00</span><span id="xLabel"></span><span id="xEnd">24:00</span></div></div>
     </div>
   </section>
 
-  <p class="source">Data source: <a href="https://dashboard.elering.ee/api/nps/price" target="_blank" rel="noreferrer">Elering / Nord Pool regional market</a>. Shows market electricity price converted to €/kWh. Your final bill also depends on your seller, network tariff and VAT.</p>
+  <p id="sourceLine" class="source"></p>
 </main>
 <script>
-const AREA_NAMES = {lv:'Latvia',lt:'Lithuania',ee:'Estonia',fi:'Finland'};
-let selectedArea = localStorage.getItem('area') || new URLSearchParams(location.search).get('area') || 'lv';
-if(!AREA_NAMES[selectedArea]) selectedArea = 'lv';
+const MARKETS = ${JSON.stringify(MARKETS)};
+const LANGS = {lv:'LV',ee:'EE',lt:'LT',ru:'RU',en:'EN'};
+const I18N = {
+ en:{brand:'Dry clothes cheaper',subtitle:'Simple answer first. Advanced details are hidden unless you want them.',priceLabel:'1. Price now',costLabel:'2. If I run dryer now',priceNow:m=>m+' price now:',for1:'€ for 1 kWh.',good:'Good time — electricity is cheap',ok:'Middle price — okay if you need it',bad:'Bad time — expensive, wait if you can',cost:p=>'Running a <b>'+p.kw+' kW</b> dryer for <b>'+p.hours+'</b> now will cost about <b>'+p.cost+' €</b>.',gauge:'3. Price gauge',higher:p=>'higher than '+p+'% of same-time prices',sameAvg:(a,b)=>'Same time average: <b>'+a+' €/kWh</b> last 3 months, <b>'+b+' €/kWh</b> last 12 months.',veryLow:'Very low',low:'Low',normal:'Normal',high:'High',veryHigh:'Very high',best:'Best times to run dryer',cheapest:'Cheapest first',runThen:p=>'Run dryer for '+p.hours+' then. It would cost about <b>'+p.cost+' €</b>.',priceThen:p=>'Price then: '+p+' €/kWh',advanced:'For experienced users',show:'Show',hide:'Hide',kw:'Dryer power',hours:'Running time',adders:'Extra fees',vat:'VAT',kwNote:'kW, example: 2.5',hoursNote:'hours, example: 1.5',addersNote:'€/kWh for network + seller',vatNote:'%, example: 21',min:'cheapest price for 1 kWh',avg:'average price for 1 kWh during dryer run now',max:'most expensive price for 1 kWh',breakdown:p=>p.hours+' at '+p.kw+' kW uses about '+p.energy+' kWh. Current-run split: market electricity '+p.market+' €, extra fees '+p.adders+' €, VAT included in total.',chartTitle:'Price picture',chartExplain:'Left to right = time. Bottom = cheap. Top = expensive. White line = now.',now:'Now',cheap:'Cheap',middle:'Middle',expensive:'Expensive',time:'Time (Riga)',updated:p=>'Updated '+p+' Riga time. Refreshes automatically.',source:'Data source: Elering / Nord Pool regional market. Shows market electricity price converted to €/kWh. Your final bill also depends on your seller, network tariff and VAT.',couldNot:'Could not load live price',refresh:'Please refresh in a moment.'},
+ lv:{brand:'Žāvē lētāk',subtitle:'Vienkāršā atbilde sākumā. Papildu iestatījumi ir paslēpti.',priceLabel:'1. Cena tagad',costLabel:'2. Ja ieslēdzu žāvētāju tagad',priceNow:m=>m+' cena tagad:',for1:'€ par 1 kWh.',good:'Labs brīdis — elektrība ir lēta',ok:'Vidēja cena — var lietot, ja vajag',bad:'Slikts brīdis — dārgi, labāk pagaidi',cost:p=>'Darbinot <b>'+p.kw+' kW</b> žāvētāju <b>'+p.hours+'</b>, tas tagad maksās ap <b>'+p.cost+' €</b>.',gauge:'3. Cenas mērs',higher:p=>'augstāka nekā '+p+'% līdzīgā laikā',sameAvg:(a,b)=>'Tajā pašā laikā vidēji: <b>'+a+' €/kWh</b> pēdējos 3 mēn., <b>'+b+' €/kWh</b> pēdējos 12 mēn.',veryLow:'Ļoti zema',low:'Zema',normal:'Normāla',high:'Augsta',veryHigh:'Ļoti augsta',best:'Labākie laiki žāvētājam',cheapest:'Lētākie sākumā',runThen:p=>'Darbini žāvētāju '+p.hours+'. Tas maksās ap <b>'+p.cost+' €</b>.',priceThen:p=>'Cena tad: '+p+' €/kWh',advanced:'Pieredzējušiem',show:'Rādīt',hide:'Slēpt',kw:'Žāvētāja jauda',hours:'Darba laiks',adders:'Papildu maksa',vat:'PVN',kwNote:'kW, piemēram: 2.5',hoursNote:'stundas, piemēram: 1.5',addersNote:'€/kWh tīkls + tirgotājs',vatNote:'%, piemēram: 21',min:'lētākā cena par 1 kWh',avg:'vidējā cena žāvēšanas laikā tagad',max:'dārgākā cena par 1 kWh',breakdown:p=>p.hours+' ar '+p.kw+' kW patērē ap '+p.energy+' kWh. Sadalījums: biržas elektrība '+p.market+' €, papildu maksa '+p.adders+' €, PVN iekļauts.',chartTitle:'Cenas attēls',chartExplain:'No kreisās uz labo = laiks. Apakšā = lēti. Augšā = dārgi. Baltā līnija = tagad.',now:'Tagad',cheap:'Lēti',middle:'Vidēji',expensive:'Dārgi',time:'Laiks (Rīga)',updated:p=>'Atjaunots '+p+' pēc Rīgas laika. Atjaunojas automātiski.',source:'Datu avots: Elering / Nord Pool reģionālais tirgus. Cena rādīta €/kWh. Gala rēķinu ietekmē tirgotājs, tīkls un PVN.',couldNot:'Neizdevās ielādēt cenu',refresh:'Pārlādē pēc brīža.'},
+ lt:{brand:'Džiovinkite pigiau',subtitle:'Paprastas atsakymas pirmiausia. Papildomi nustatymai paslėpti.',priceLabel:'1. Kaina dabar',costLabel:'2. Jei džiovyklę įjungsiu dabar',priceNow:m=>m+' kaina dabar:',for1:'€ už 1 kWh.',good:'Geras laikas — elektra pigi',ok:'Vidutinė kaina — galima naudoti',bad:'Blogas laikas — brangu, verta palaukti',cost:p=>'Naudojant <b>'+p.kw+' kW</b> džiovyklę <b>'+p.hours+'</b>, dabar kainuos apie <b>'+p.cost+' €</b>.',gauge:'3. Kainos matuoklis',higher:p=>'aukščiau nei '+p+'% to paties laiko kainų',sameAvg:(a,b)=>'Tuo pačiu metu vidutiniškai: <b>'+a+' €/kWh</b> per 3 mėn., <b>'+b+' €/kWh</b> per 12 mėn.',veryLow:'Labai maža',low:'Maža',normal:'Normali',high:'Didelė',veryHigh:'Labai didelė',best:'Geriausias laikas džiovyklei',cheapest:'Pigiausia pirmiau',runThen:p=>'Tada paleiskite džiovyklę '+p.hours+'. Kainuos apie <b>'+p.cost+' €</b>.',priceThen:p=>'Kaina tada: '+p+' €/kWh',advanced:'Patyrusiems naudotojams',show:'Rodyti',hide:'Slėpti',kw:'Džiovyklės galia',hours:'Veikimo laikas',adders:'Papildomi mokesčiai',vat:'PVM',kwNote:'kW, pvz.: 2.5',hoursNote:'valandos, pvz.: 1.5',addersNote:'€/kWh tinklas + tiekėjas',vatNote:'%, pvz.: 21',min:'pigiausia 1 kWh kaina',avg:'vidutinė 1 kWh kaina dabar',max:'brangiausia 1 kWh kaina',breakdown:p=>p.hours+' su '+p.kw+' kW sunaudoja apie '+p.energy+' kWh. Dalis: biržos elektra '+p.market+' €, papildomi mokesčiai '+p.adders+' €, PVM įskaičiuotas.',chartTitle:'Kainos vaizdas',chartExplain:'Iš kairės į dešinę = laikas. Apačia = pigu. Viršus = brangu. Balta linija = dabar.',now:'Dabar',cheap:'Pigu',middle:'Vidutiniškai',expensive:'Brangu',time:'Laikas (Ryga)',updated:p=>'Atnaujinta '+p+' Rygos laiku. Atsinaujina automatiškai.',source:'Duomenų šaltinis: Elering / Nord Pool regioninė rinka. Kaina rodoma €/kWh. Galutinę sąskaitą lemia tiekėjas, tinklas ir PVM.',couldNot:'Nepavyko įkelti kainos',refresh:'Bandykite atnaujinti.'},
+ ee:{brand:'Kuivata soodsamalt',subtitle:'Lihtne vastus ees. Täpsemad seaded on peidetud.',priceLabel:'1. Hind praegu',costLabel:'2. Kui panen kuivati nüüd tööle',priceNow:m=>m+' hind praegu:',for1:'€ 1 kWh eest.',good:'Hea aeg — elekter on odav',ok:'Keskmine hind — sobib, kui vaja',bad:'Halb aeg — kallis, oota kui saad',cost:p=>'<b>'+p.kw+' kW</b> kuivati <b>'+p.hours+'</b> töötamine maksab praegu umbes <b>'+p.cost+' €</b>.',gauge:'3. Hinnanäidik',higher:p=>'kõrgem kui '+p+'% sama aja hindadest',sameAvg:(a,b)=>'Samal ajal keskmiselt: <b>'+a+' €/kWh</b> viimased 3 kuud, <b>'+b+' €/kWh</b> viimased 12 kuud.',veryLow:'Väga madal',low:'Madal',normal:'Normaalne',high:'Kõrge',veryHigh:'Väga kõrge',best:'Parim aeg kuivati jaoks',cheapest:'Odavaim ees',runThen:p=>'Pane kuivati siis tööle '+p.hours+'. See maksab umbes <b>'+p.cost+' €</b>.',priceThen:p=>'Hind siis: '+p+' €/kWh',advanced:'Kogenud kasutajale',show:'Näita',hide:'Peida',kw:'Kuivati võimsus',hours:'Tööaeg',adders:'Lisatasud',vat:'KM',kwNote:'kW, näiteks: 2.5',hoursNote:'tundi, näiteks: 1.5',addersNote:'€/kWh võrk + müüja',vatNote:'%, näiteks: 21',min:'odavaim 1 kWh hind',avg:'keskmine 1 kWh hind kuivati ajal',max:'kalleim 1 kWh hind',breakdown:p=>p.hours+' '+p.kw+' kW juures kasutab umbes '+p.energy+' kWh. Jaotus: börsielekter '+p.market+' €, lisatasud '+p.adders+' €, KM hinna sees.',chartTitle:'Hinna pilt',chartExplain:'Vasakult paremale = aeg. All = odav. Üleval = kallis. Valge joon = praegu.',now:'Praegu',cheap:'Odav',middle:'Keskmine',expensive:'Kallis',time:'Aeg (Riia)',updated:p=>'Uuendatud '+p+' Riia aja järgi. Uueneb automaatselt.',source:'Allikas: Elering / Nord Pool piirkondlik turg. Hind kuvatakse €/kWh. Lõpparvet mõjutavad müüja, võrk ja KM.',couldNot:'Hinda ei saanud laadida',refresh:'Värskenda hetke pärast.'},
+ ru:{brand:'Сушить дешевле',subtitle:'Сначала простой ответ. Расширенные настройки скрыты.',priceLabel:'1. Цена сейчас',costLabel:'2. Если включить сушилку сейчас',priceNow:m=>m+' цена сейчас:',for1:'€ за 1 кВт⋅ч.',good:'Хорошее время — электричество дешёвое',ok:'Средняя цена — можно пользоваться',bad:'Плохое время — дорого, лучше подождать',cost:p=>'Сушилка <b>'+p.kw+' кВт</b> за <b>'+p.hours+'</b> сейчас будет стоить около <b>'+p.cost+' €</b>.',gauge:'3. Индикатор цены',higher:p=>'выше чем '+p+'% цен в это же время',sameAvg:(a,b)=>'В это же время в среднем: <b>'+a+' €/kWh</b> за 3 мес., <b>'+b+' €/kWh</b> за 12 мес.',veryLow:'Очень низкая',low:'Низкая',normal:'Нормальная',high:'Высокая',veryHigh:'Очень высокая',best:'Лучшее время для сушилки',cheapest:'Сначала дешёвые',runThen:p=>'Запустите сушилку на '+p.hours+' тогда. Это будет стоить около <b>'+p.cost+' €</b>.',priceThen:p=>'Цена тогда: '+p+' €/kWh',advanced:'Для опытных',show:'Показать',hide:'Скрыть',kw:'Мощность сушилки',hours:'Время работы',adders:'Доп. расходы',vat:'НДС',kwNote:'кВт, например: 2.5',hoursNote:'часы, например: 1.5',addersNote:'€/kWh сеть + продавец',vatNote:'%, например: 21',min:'самая низкая цена за 1 kWh',avg:'средняя цена за 1 kWh сейчас',max:'самая высокая цена за 1 kWh',breakdown:p=>p.hours+' при '+p.kw+' кВт использует около '+p.energy+' kWh. Разделение: биржевая энергия '+p.market+' €, доп. расходы '+p.adders+' €, НДС включён.',chartTitle:'Картина цены',chartExplain:'Слева направо = время. Внизу = дёшево. Вверху = дорого. Белая линия = сейчас.',now:'Сейчас',cheap:'Дёшево',middle:'Средне',expensive:'Дорого',time:'Время (Рига)',updated:p=>'Обновлено '+p+' по рижскому времени. Обновляется автоматически.',source:'Источник: региональный рынок Elering / Nord Pool. Цена показана в €/kWh. Итоговый счёт зависит от продавца, сети и НДС.',couldNot:'Не удалось загрузить цену',refresh:'Обновите через минуту.'}
+};
+let selectedMarket = localStorage.getItem('market') || localStorage.getItem('area') || new URLSearchParams(location.search).get('area') || 'lv';
+if(!MARKETS[selectedMarket]) selectedMarket = 'lv';
+localStorage.setItem('market', selectedMarket);
+let userLang = localStorage.getItem('lang');
+let lang = userLang && I18N[userLang] ? userLang : MARKETS[selectedMarket].lang;
 const $ = id => document.getElementById(id);
+const tr = (key,...args) => { const v = (I18N[lang] || I18N.en)[key] ?? I18N.en[key] ?? key; return typeof v === 'function' ? v(...args) : v; };
+const marketName = code => (MARKETS[code]?.name?.[lang] || MARKETS[code]?.name?.en || code);
 const fmtMoney = v => Number(v || 0).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtPrice = v => Number(v || 0).toLocaleString('en-GB',{maximumFractionDigits:0});
 const fmtOne = v => Number(v || 0).toLocaleString('en-GB',{minimumFractionDigits:1,maximumFractionDigits:1});
 const tf = new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Riga',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const df = new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Riga',year:'numeric',month:'2-digit',day:'2-digit'});
 const range = (s,e) => tf.format(new Date(s*1000)) + '–' + tf.format(new Date(e*1000));
+function wordsForHours(h){ return fmtOne(h) + (lang==='en' ? (' hour' + (Number(h) === 1 ? '' : 's')) : lang==='ru' ? ' ч' : lang==='lv' ? ' h' : ' val.'); }
 function moodClass(price){ return price < 80 ? 'good' : price < 180 ? 'ok' : 'bad'; }
-function moodText(price){ return price < 80 ? 'Good time — electricity is cheap' : price < 180 ? 'Middle price — okay if you need it' : 'Bad time — expensive, wait if you can'; }
-function wordsForHours(h){ return fmtOne(h) + ' hour' + (Number(h) === 1 ? '' : 's'); }
-async function load(){
-  const params = new URLSearchParams({area:selectedArea,kw:$('kw').value,duration:$('duration').value,adders:$('adders').value,vat:$('vat').value});
-  let data;
-  try{
-    const res = await fetch('/api/prices?' + params);
-    data = await res.json();
-    if(!data.ok) throw new Error(data.error || 'Price load failed');
-  }catch(err){
-    $('badge').textContent = 'Could not load live price'; $('badge').className = 'mood bad';
-    $('pricePlain').textContent = 'Please refresh in a moment.'; return;
-  }
-  const cur = data.current || {}; const opts = data.opts || {}; const run = data.currentRun || {};
-  selectedArea = data.area || selectedArea;
-  $('regionBtn').textContent = 'Live ' + (data.areaName || AREA_NAMES[selectedArea]) + ' price ▾';
-  [...document.querySelectorAll('[data-area]')].forEach(btn => btn.classList.toggle('active', btn.dataset.area === selectedArea));
-  const kwhPrice = Number(cur.price || 0) / 1000;
-  const minKwh = Number(data.min?.price || 0) / 1000;
-  const maxKwh = Number(data.max?.price || 0) / 1000;
-  const avgKwh = Number(run.avgPrice || 0) / 1000;
-  $('price').textContent = kwhPrice.toFixed(3);
-  $('pricePlain').innerHTML = '<b>' + (data.areaName || AREA_NAMES[selectedArea]) + ' price now:</b> ' + kwhPrice.toFixed(3) + ' € for 1 kWh.';
+function moodText(price){ return price < 80 ? tr('good') : price < 180 ? tr('ok') : tr('bad'); }
+function localizeStatic(){
+  document.documentElement.lang = lang;
+  document.querySelector('[data-i18n="brand"]').textContent = tr('brand');
+  $('subtitle').textContent = tr('subtitle'); $('priceLabel').textContent = tr('priceLabel'); $('costLabel').textContent = tr('costLabel'); $('gaugeLabelTop').textContent = tr('gauge');
+  $('scaleLow').textContent = tr('veryLow'); $('scaleNormal').textContent = tr('normal'); $('scaleHigh').textContent = tr('veryHigh');
+  $('bestTitle').textContent = tr('best'); $('cheapestTag').textContent = tr('cheapest'); $('advancedTitle').textContent = tr('advanced'); $('advancedState').textContent = $('advanced').classList.contains('open') ? tr('hide') : tr('show');
+  $('kwLabel').textContent = tr('kw'); $('durationLabel').textContent = tr('hours'); $('addersLabel').textContent = tr('adders'); $('vatLabel').textContent = tr('vat');
+  $('kwNote').textContent = tr('kwNote'); $('durationNote').textContent = tr('hoursNote'); $('addersNote').textContent = tr('addersNote'); $('vatNote').textContent = tr('vatNote');
+  $('minpText').textContent = tr('min'); $('avgpText').textContent = tr('avg'); $('maxpText').textContent = tr('max');
+  $('chartTitle').textContent = tr('chartTitle'); $('chartExplain').textContent = tr('chartExplain'); $('legendCheap').textContent = tr('cheap'); $('legendMiddle').textContent = tr('middle'); $('legendHigh').textContent = tr('expensive'); $('xLabel').textContent = tr('time'); $('sourceLine').textContent = tr('source');
+  $('marketBtn').textContent = MARKETS[selectedMarket].flag + ' ' + marketName(selectedMarket) + ' ▾';
+  renderMarketSheet(); renderLangs();
+}
+function renderMarketSheet(){
+  $('marketSheet').innerHTML = Object.entries(MARKETS).map(([code,m]) => '<button class="'+(code===selectedMarket?'active':'')+'" data-market="'+code+'">'+m.flag+' '+marketName(code)+'</button>').join('');
+  document.querySelectorAll('[data-market]').forEach(btn => btn.addEventListener('click',()=>{ selectedMarket = btn.dataset.market; localStorage.setItem('market', selectedMarket); if(!localStorage.getItem('lang')) lang = MARKETS[selectedMarket].lang; $('marketSheet').hidden = true; localizeStatic(); load(); }));
+}
+function renderLangs(){
+  $('langWrap').innerHTML = Object.entries(LANGS).map(([code,label]) => '<button class="langBtn '+(code===lang?'active':'')+'" data-lang="'+code+'">'+label+'</button>').join('');
+  document.querySelectorAll('[data-lang]').forEach(btn => btn.addEventListener('click',()=>{ lang = btn.dataset.lang; localStorage.setItem('lang', lang); localizeStatic(); if(window.lastData) renderData(window.lastData); }));
+}
+function renderData(data){
+  localizeStatic();
+  const cur = data.current || {}; const opts = data.opts || {}; const run = data.currentRun || {}; const mName = marketName(data.area || selectedMarket);
+  const kwhPrice = Number(cur.price || 0) / 1000; const minKwh = Number(data.min?.price || 0) / 1000; const maxKwh = Number(data.max?.price || 0) / 1000; const avgKwh = Number(run.avgPrice || 0) / 1000;
+  $('price').textContent = kwhPrice.toFixed(3); $('pricePlain').innerHTML = '<b>'+tr('priceNow', mName)+'</b> ' + kwhPrice.toFixed(3) + ' ' + tr('for1');
   $('badge').textContent = moodText(cur.price); $('badge').className = 'mood ' + moodClass(cur.price);
-  const bm = data.benchmarks || {};
-  const pct = Number.isFinite(Number(bm.percentile12m)) ? Math.max(0, Math.min(100, Number(bm.percentile12m))) : 50;
-  $('gaugeLabel').textContent = bm.label || 'Normal';
-  $('gaugePct').textContent = 'higher than ' + Math.round(pct) + '% of same-time prices';
-  $('gaugeNeedle').style.left = pct + '%';
-  $('gaugePlain').innerHTML = 'Same time average: <b>' + Number(bm.avg3mKwh || 0).toFixed(3) + ' €/kWh</b> last 3 months, <b>' + Number(bm.avg12mKwh || 0).toFixed(3) + ' €/kWh</b> last 12 months.';
-  $('costNow').innerHTML = fmtMoney(run.total) + ' €';
-  $('costPlain').innerHTML = 'Running a <b>' + fmtOne(opts.powerKw) + ' kW</b> dryer for <b>' + wordsForHours(opts.durationHours) + '</b> now will cost about <b>' + fmtMoney(run.total) + ' €</b>.';
+  const bm = data.benchmarks || {}; const pct = Number.isFinite(Number(bm.percentile12m)) ? Math.max(0, Math.min(100, Number(bm.percentile12m))) : 50;
+  $('gaugeLabel').textContent = tr(bm.label || 'normal'); $('gaugePct').textContent = tr('higher', Math.round(pct)); $('gaugeNeedle').style.left = pct + '%'; $('gaugePlain').innerHTML = tr('sameAvg', Number(bm.avg3mKwh || 0).toFixed(3), Number(bm.avg12mKwh || 0).toFixed(3));
+  $('costNow').innerHTML = fmtMoney(run.total) + ' €'; $('costPlain').innerHTML = tr('cost', {kw:fmtOne(opts.powerKw), hours:wordsForHours(opts.durationHours), cost:fmtMoney(run.total)});
   $('minp').textContent = minKwh.toFixed(3) + ' €/kWh'; $('avgp').textContent = avgKwh.toFixed(3) + ' €/kWh'; $('maxp').textContent = maxKwh.toFixed(3) + ' €/kWh';
-  $('costBreakdown').textContent = wordsForHours(opts.durationHours) + ' at ' + fmtOne(opts.powerKw) + ' kW uses about ' + Number(run.energyKwh || 0).toFixed(2) + ' kWh. Current-run split: market electricity ' + fmtMoney(run.market) + ' €, extra fees ' + fmtMoney(run.adders) + ' €, VAT included in total.';
-  $('windows').innerHTML = (data.best || []).slice(0,4).map((w,i) => '<div class="window"><div class="rank">' + (i+1) + '</div><div><div class="when">' + range(w.start,w.end) + '</div><div class="meaning">Run dryer for ' + wordsForHours(opts.durationHours) + ' then. It would cost about <b>' + fmtMoney(w.total) + ' €</b>.</div><div class="priceChip">Price then: ' + (Number(w.avgPrice || 0)/1000).toFixed(3) + ' €/kWh</div></div></div>').join('') || '<div class="note">No full upcoming dryer window is available yet.</div>';
+  $('costBreakdown').textContent = tr('breakdown', {hours:wordsForHours(opts.durationHours), kw:fmtOne(opts.powerKw), energy:Number(run.energyKwh || 0).toFixed(2), market:fmtMoney(run.market), adders:fmtMoney(run.adders)});
+  $('windows').innerHTML = (data.best || []).slice(0,4).map((w,i) => '<div class="window"><div class="rank">' + (i+1) + '</div><div><div class="when">' + range(w.start,w.end) + '</div><div class="meaning">' + tr('runThen',{hours:wordsForHours(opts.durationHours), cost:fmtMoney(w.total)}) + '</div><div class="priceChip">' + tr('priceThen',(Number(w.avgPrice || 0)/1000).toFixed(3)) + '</div></div></div>').join('');
   const rows = data.rows || []; const today = df.format(new Date()); const chartRows = rows.filter(r => df.format(new Date(r.timestamp*1000)) === today); const useRows = chartRows.length ? chartRows : rows;
   const vals = useRows.map(r=>r.price); const min = Math.min(...vals); const max = Math.max(...vals); const nowTs = cur.timestamp;
   $('chart').innerHTML = useRows.map(r=>{ const h = 12 + Math.round(((r.price - min) / Math.max(1,max-min)) * 146); const cls = (r.timestamp === nowTs ? ' now' : '') + (r.price < 90 ? ' good' : r.price > 220 ? ' bad' : ''); return '<div class="bar' + cls + '" style="height:' + h + 'px" title="' + range(r.timestamp,r.timestamp+900) + ': ' + (Number(r.price||0)/1000).toFixed(3) + ' €/kWh"></div>'; }).join('');
-  const sorted = [...useRows].sort((a,b)=>a.timestamp-b.timestamp);
-  if(sorted.length){ $('xStart').textContent = chartRows.length ? '00:00' : tf.format(new Date(sorted[0].timestamp*1000)); $('xEnd').textContent = chartRows.length ? '24:00' : tf.format(new Date((sorted[sorted.length-1].timestamp+900)*1000)); }
-  $('yHigh').textContent = (max/1000).toFixed(3) + ' €/kWh'; $('yLow').textContent = (min/1000).toFixed(3) + ' €/kWh'; $('chartNow').textContent = 'Now ' + tf.format(new Date());
-  $('statusLine').textContent = 'Updated ' + new Date(data.updatedAt).toLocaleString('en-GB',{timeZone:'Europe/Riga'}) + ' Riga time. Refreshes automatically.';
+  $('xStart').textContent = chartRows.length ? '00:00' : '—'; $('xEnd').textContent = chartRows.length ? '24:00' : '—'; $('yHigh').textContent = (max/1000).toFixed(3) + ' €/kWh'; $('yLow').textContent = (min/1000).toFixed(3) + ' €/kWh'; $('chartNow').textContent = tr('now') + ' ' + tf.format(new Date());
+  $('statusLine').textContent = tr('updated', new Date(data.updatedAt).toLocaleString('en-GB',{timeZone:'Europe/Riga'}));
 }
-$('regionBtn').addEventListener('click',()=>{ $('regionSheet').hidden = !$('regionSheet').hidden; });
-[...document.querySelectorAll('[data-area]')].forEach(btn => btn.addEventListener('click',()=>{ selectedArea = btn.dataset.area; localStorage.setItem('area', selectedArea); $('regionSheet').hidden = true; load(); }));
-document.addEventListener('click', e => { if(!$('regionSheet').hidden && !e.target.closest('#regionSheet') && !e.target.closest('#regionBtn')) $('regionSheet').hidden = true; });
-$('advancedBtn').addEventListener('click',()=>{ const box=$('advanced'); const open=!box.classList.contains('open'); box.classList.toggle('open',open); $('advancedBtn').querySelector('span').textContent = open ? 'Hide' : 'Show'; });
+async function load(){
+  localizeStatic();
+  const params = new URLSearchParams({area:selectedMarket,kw:$('kw').value,duration:$('duration').value,adders:$('adders').value,vat:$('vat').value});
+  try{
+    const res = await fetch('/api/prices?' + params);
+    const data = await res.json();
+    if(!data.ok) throw new Error(data.error || 'Price load failed');
+    window.lastData = data;
+    renderData(data);
+  }catch(err){ $('badge').textContent = tr('couldNot'); $('badge').className = 'mood bad'; $('pricePlain').textContent = tr('refresh'); }
+}
+$('marketBtn').addEventListener('click',()=>{ $('marketSheet').hidden = !$('marketSheet').hidden; });
+document.addEventListener('click', e => { if(!$('marketSheet').hidden && !e.target.closest('#marketSheet') && !e.target.closest('#marketBtn')) $('marketSheet').hidden = true; });
+$('advancedBtn').addEventListener('click',()=>{ const box=$('advanced'); const open=!box.classList.contains('open'); box.classList.toggle('open',open); $('advancedState').textContent = open ? tr('hide') : tr('show'); });
 ['kw','duration','adders','vat'].forEach(id => $(id).addEventListener('input',()=>{ clearTimeout(window.t); window.t=setTimeout(load,180); }));
 load(); setInterval(load,60000);
 </script>
