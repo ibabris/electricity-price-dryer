@@ -1,0 +1,16 @@
+name: electricity-price-dryer
+region: fra
+services:
+  - name: web
+    github:
+      repo: ibabris/electricity-price-dryer
+      branch: master
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: node-js
+    run_command: npm start
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /
