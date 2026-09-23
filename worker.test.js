@@ -21,12 +21,18 @@ test('current row finds 15-minute interval',()=>{
   assert.equal(currentRow(rows, (1000+3*900+20)*1000).price,50);
 });
 
-test('all Elering markets are included with flags and default language',()=>{
+test('Nord Pool market setup includes live Elering markets and the wider country/zone list',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   for (const [code, flag] of Object.entries({lv:'🇱🇻',lt:'🇱🇹',ee:'🇪🇪',fi:'🇫🇮'})) {
-    assert.match(html, new RegExp(`${code}: \\{ name:`));
+    assert.match(html, new RegExp(`${code}: \\{ country:`));
+    assert.match(html, new RegExp(`${code}: [^\n]+live:true`));
     assert.ok(html.includes(flag));
   }
+  for (const code of ['no1','no5','se1','se4','dk1','dk2','de_lu','nl','be','at','fr','pl','gb','ie']) {
+    assert.match(html, new RegExp(`${code}:\\s*\\{ country:`));
+    assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+live:false`));
+  }
+  assert.match(html, /market_not_live_yet/);
   assert.match(html, /selectedMarket = localStorage\.getItem\('market'\)/);
   assert.match(html, /localStorage\.setItem\('market'/);
   assert.match(html, /MARKETS\[selectedMarket\]\.lang/);

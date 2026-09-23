@@ -14,3 +14,8 @@ services:
     instance_size_slug: basic-xxs
     routes:
       - path: /
+domains:
+  - domain: elektoprice.lv
+    type: PRIMARY
+  - domain: www.elektoprice.lv
+    type: ALIAS
