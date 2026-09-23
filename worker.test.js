@@ -21,23 +21,26 @@ test('current row finds 15-minute interval',()=>{
   assert.equal(currentRow(rows, (1000+3*900+20)*1000).price,50);
 });
 
-test('Nord Pool market setup includes live Elering markets and the wider country/zone list',()=>{
+test('Nord Pool market setup connects every API-supported market and hides unsupported ones',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
-  for (const [code, flag] of Object.entries({lv:'🇱🇻',lt:'🇱🇹',ee:'🇪🇪',fi:'🇫🇮'})) {
-    assert.match(html, new RegExp(`${code}: \\{ country:`));
-    assert.match(html, new RegExp(`${code}: [^\n]+live:true`));
+  for (const [code, flag] of Object.entries({lv:'🇱🇻',lt:'🇱🇹',ee:'🇪🇪',fi:'🇫🇮',nl:'🇳🇱'})) {
+    assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+live:true`));
+    assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+nordpoolArea:`));
     assert.ok(html.includes(flag));
   }
-  for (const code of ['no1','no5','se1','se4','dk1','dk2','de_lu','nl','be','at','fr','pl','gb','ie']) {
-    assert.match(html, new RegExp(`${code}:\\s*\\{ country:`));
+  for (const code of ['no1','no5','se1','se4','dk1','dk2','nl','be','at','fr','pl']) {
+    assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+live:true`));
+    assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+nordpoolArea:`));
+  }
+  for (const code of ['de_lu','gb','ie']) {
     assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+live:false`));
   }
-  assert.match(html, /market_not_live_yet/);
-  assert.match(html, /fetchJsonCached/);
+  assert.match(html, /ACTIVE_MARKETS/);
+  assert.match(html, /DayAheadPrices/);
+  assert.match(html, /multiAreaEntries/);
   assert.match(html, /SLOT_CACHE/);
   assert.match(html, /quick = url\.searchParams\.get\('quick'\) === '1'/);
   assert.match(html, /scheduleFullRefresh/);
-  assert.match(html, /HISTORY_CACHE_TTL_MS = 6 \* 3600 \* 1000/);
   assert.match(html, /function makeSlotKey/);
   assert.match(html, /selectedMarket = localStorage\.getItem\('market'\)/);
   assert.match(html, /localStorage\.setItem\('market'/);
