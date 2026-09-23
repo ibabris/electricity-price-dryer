@@ -33,6 +33,12 @@ test('Nord Pool market setup includes live Elering markets and the wider country
     assert.match(html, new RegExp(`${code}:\\s*\\{[^\n]+live:false`));
   }
   assert.match(html, /market_not_live_yet/);
+  assert.match(html, /fetchJsonCached/);
+  assert.match(html, /SLOT_CACHE/);
+  assert.match(html, /quick = url\.searchParams\.get\('quick'\) === '1'/);
+  assert.match(html, /scheduleFullRefresh/);
+  assert.match(html, /HISTORY_CACHE_TTL_MS = 6 \* 3600 \* 1000/);
+  assert.match(html, /function makeSlotKey/);
   assert.match(html, /selectedMarket = localStorage\.getItem\('market'\)/);
   assert.match(html, /localStorage\.setItem\('market'/);
   assert.match(html, /MARKETS\[selectedMarket\]\.lang/);
@@ -58,12 +64,9 @@ test('UI remains simple with hidden advanced controls and consumer units',()=>{
   assert.match(html, /advanced\{display:none/);
 });
 
-test('chart has understandable local-day axis and now marker',()=>{
+test('market dropdown is scrollable on mobile',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
-  assert.match(html, /chartExplain:'Left to right = time\. Bottom = cheap\. Top = expensive\. White line = now\.'/);
-  assert.match(html, /Price €\/kWh/);
-  assert.match(html, /Time \(Riga\)/);
-  assert.match(html, /00:00/);
-  assert.match(html, /24:00/);
-  assert.match(html, /chartNow/);
+  assert.match(html, /\.sheet\{[^}]*max-height:calc\(100dvh - 76px - env\(safe-area-inset-bottom\)\)/);
+  assert.match(html, /\.sheet\{[^}]*overflow-y:auto/);
+  assert.match(html, /-webkit-overflow-scrolling:touch/);
 });

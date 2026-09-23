@@ -2,6 +2,10 @@ import { DEFAULTS, summarize } from './core.js';
 
 const SOURCE = 'https://dashboard.elering.ee/api/nps/price';
 const CACHE_SECONDS = 60;
+const DATA_CACHE = new Map();
+const SLOT_CACHE = new Map();
+const CACHE_TTL_MS = 60 * 1000;
+const HISTORY_CACHE_TTL_MS = 6 * 3600 * 1000;
 // Nord Pool works by bidding zone, not always by whole country. Elering's public
 // endpoint currently exposes live 15-minute Nord Pool prices for EE/FI/LT/LV only;
 // the remaining Nord Pool countries are listed with correct zones/settings but are
@@ -45,24 +49,42 @@ function historyUrl(days){
   const start = new Date(now.getTime() - days * 24 * 3600 * 1000);
   return `${SOURCE}?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(now.toISOString())}`;
 }
-async function fetchMarketRows(url, area){
-  const res = await fetch(url, { headers: { 'user-agent':'Electricity price dryer helper' }, cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true } });
+async function fetchJsonCached(url, ttlMs){
+  const now = Date.now();
+  const cached = DATA_CACHE.get(url);
+  if(cached && now - cached.at < ttlMs) return cached.json;
+  const res = await fetch(url, { headers: { 'user-agent':'Elektoprice.lv electricity helper' }, cf: { cacheTtl: Math.round(ttlMs / 1000), cacheEverything: true } });
   if(!res.ok) throw new Error(`price_source_${res.status}`);
   const json = await res.json();
+  DATA_CACHE.set(url, { at: now, json });
+  return json;
+}
+async function fetchMarketRows(url, area, ttlMs = CACHE_TTL_MS){
   const market = MARKETS[normalizeArea(area)];
   if(!market.live || !market.sourceKey) throw new Error('market_not_live_yet');
+  const json = await fetchJsonCached(url, ttlMs);
   const selected = json?.data?.[market.sourceKey];
   if(!Array.isArray(selected) || !selected.length) throw new Error('price_source_empty');
   return selected.map(x => ({ timestamp: Number(x.timestamp), price: Number(x.price) })).filter(x => Number.isFinite(x.timestamp) && Number.isFinite(x.price));
 }
-const fetchPrices = area => fetchMarketRows(priceUrl(), area);
+const fetchPrices = area => fetchMarketRows(priceUrl(), area, CACHE_TTL_MS);
 async function fetchHistory(days, area = 'lv'){
-  try { return await fetchMarketRows(historyUrl(days), area); } catch { return []; }
+  try { return await fetchMarketRows(historyUrl(days), area, HISTORY_CACHE_TTL_MS); } catch { return []; }
+}
+function makeSlotKey(timezone = 'Europe/Riga'){
+  const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
+  return ts => {
+    const cacheKey = timezone + ':' + ts;
+    if(SLOT_CACHE.has(cacheKey)) return SLOT_CACHE.get(cacheKey);
+    const parts = Object.fromEntries(fmt.formatToParts(new Date(ts * 1000)).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+    const key = Number(parts.hour) * 60 + Math.floor(Number(parts.minute) / 15) * 15;
+    if(SLOT_CACHE.size > 200000) SLOT_CACHE.clear();
+    SLOT_CACHE.set(cacheKey, key);
+    return key;
+  };
 }
 function slotKey(ts, timezone = 'Europe/Riga'){
-  const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
-  const parts = Object.fromEntries(fmt.formatToParts(new Date(ts * 1000)).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
-  return Number(parts.hour) * 60 + Math.floor(Number(parts.minute) / 15) * 15;
+  return makeSlotKey(timezone)(ts);
 }
 function avg(rows){ return rows.length ? rows.reduce((a,r)=>a+Number(r.price || 0),0) / rows.length : 0; }
 function percentile(value, rows){
@@ -72,9 +94,12 @@ function percentile(value, rows){
 function gaugeLabel(p){ return p < 10 ? 'veryLow' : p < 30 ? 'low' : p < 70 ? 'normal' : p < 90 ? 'high' : 'veryHigh'; }
 function buildBenchmark(current, hist90, hist365, timezone = 'Europe/Riga'){
   if(!current) return null;
-  const key = slotKey(current.timestamp, timezone);
-  const same3m = hist90.filter(r => slotKey(r.timestamp, timezone) === key);
-  const same12m = hist365.filter(r => slotKey(r.timestamp, timezone) === key);
+  const slot = makeSlotKey(timezone);
+  const key = slot(current.timestamp);
+  const same3m = [];
+  const same12m = [];
+  for(const r of hist90) if(slot(r.timestamp) === key) same3m.push(r);
+  for(const r of hist365) if(slot(r.timestamp) === key) same12m.push(r);
   const pct12 = percentile(current.price, same12m);
   return { slotMinutes:key, currentKwh: current.price / 1000, avg3mKwh: avg(same3m) / 1000, avg12mKwh: avg(same12m) / 1000, percentile12m:pct12, label:gaugeLabel(pct12), sample3m:same3m.length, sample12m:same12m.length };
 }
@@ -96,7 +121,7 @@ function page(){ return new Response(HTML, { headers:{ 'content-type':'text/html
 export default { async fetch(request){
   const url = new URL(request.url);
   if(url.pathname === '/api/prices'){
-    try { const area = normalizeArea(url.searchParams.get('area')); const [rows, hist90, hist365] = await Promise.all([fetchPrices(area), fetchHistory(90, area), fetchHistory(365, area)]); return json(apiPayload(rows, url, hist90, hist365)); }
+    try { const area = normalizeArea(url.searchParams.get('area')); const quick = url.searchParams.get('quick') === '1'; const rows = await fetchPrices(area); const [hist90, hist365] = quick ? [[], []] : await Promise.all([fetchHistory(90, area), fetchHistory(365, area)]); return json(apiPayload(rows, url, hist90, hist365)); }
     catch(err){ const area = normalizeArea(url.searchParams.get('area')); const status = String(err.message||err) === 'market_not_live_yet' ? 501 : 502; return json({ ok:false, error:String(err.message||err), sourceUrl:SOURCE, area, market:MARKETS[area], markets:MARKETS }, status); }
   }
   return page();
@@ -109,7 +134,7 @@ const HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Elektoprice.lv — electricity price helper</title>
 <style>
-:root{--bg:#f3f7fb;--ink:#102033;--muted:#637287;--line:#dce6f1;--green:#0e9f6e;--shadow:0 20px 60px rgba(16,32,51,.14)}*{box-sizing:border-box}html{background:#eaf3fb}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,"Segoe UI",sans-serif;background:linear-gradient(180deg,#f8fbff 0,#edf6ff 50%,#f6f8fb 100%);color:var(--ink);min-height:100vh}main{width:min(720px,100%);margin:0 auto;padding:env(safe-area-inset-top) 14px 28px}.appTop{position:sticky;top:0;z-index:5;margin:0 -14px 10px;padding:10px 14px 8px;background:rgba(248,251,255,.9);backdrop-filter:blur(18px);border-bottom:1px solid rgba(220,230,241,.7)}.topLine{display:flex;align-items:center;justify-content:space-between;gap:8px}.brand{display:flex;align-items:center;gap:9px;font-weight:950;font-size:22px;letter-spacing:-.04em}.bolt{width:38px;height:38px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(135deg,#0b65d8,#27c0ff);color:#fff;box-shadow:0 8px 22px rgba(11,101,216,.25)}.pill{appearance:none;font-family:inherit;font-size:12px;font-weight:900;color:var(--green);background:#e8fff3;border:1px solid #baf2d1;border-radius:999px;padding:8px 10px;cursor:pointer;white-space:nowrap}.subtitle{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.25}.sheet{position:absolute;right:14px;top:58px;background:#fff;border:1px solid #dce6f1;border-radius:18px;box-shadow:0 18px 44px rgba(16,32,51,.18);padding:6px;display:grid;gap:4px;z-index:10;min-width:190px}.sheet[hidden]{display:none}.sheet button{appearance:none;border:0;background:#fff;color:#102033;text-align:left;border-radius:13px;padding:11px 12px;font-weight:950;font-size:16px}.sheet button.active,.sheet button:hover{background:#eaf4ff;color:#0b65d8}.langWrap{display:flex;gap:6px;margin-top:8px;overflow:auto;padding-bottom:2px}.langBtn{appearance:none;border:1px solid #dce6f1;border-radius:999px;background:#fff;color:#405671;padding:6px 10px;font-weight:950}.langBtn.active{background:#102033;color:#fff}.card{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:16px;margin:12px 0}.heroCard{background:linear-gradient(180deg,#ffffff 0,#eef8ff 100%)}.label{font-size:13px;font-weight:950;color:#4b6078;text-transform:uppercase;letter-spacing:.06em}.answer{font-weight:950;letter-spacing:-.04em}.priceNow{display:flex;align-items:end;gap:6px;margin-top:5px;min-width:0;flex-wrap:wrap}.priceNumber{font-size:clamp(62px,20vw,126px);line-height:.82;color:#06162b}.priceUnit{font-size:clamp(20px,5.5vw,25px);font-weight:950;margin-bottom:8px;color:#27445f}.plain{font-size:19px;line-height:1.28;margin:12px 0 0;color:#294259}.plain b{color:#07182e}.mood{display:inline-flex;margin-top:12px;border-radius:999px;padding:8px 12px;font-weight:900;font-size:14px}.mood.good{color:#05603a;background:#d9ffe9}.mood.ok{color:#794b05;background:#fff4cc}.mood.bad{color:#991b1b;background:#ffe2e2}.costCard{background:linear-gradient(160deg,#063b73 0,#0b65d8 62%,#13a0dd 100%);color:#fff;border:0}.costCard .label{color:#dbeafe}.costLine{font-size:clamp(34px,10vw,68px);line-height:.95;margin:8px 0 4px}.costText{font-size:20px;line-height:1.25;margin:10px 0 0;color:#eef6ff}.gaugeTitle{display:flex;justify-content:space-between;align-items:end;gap:10px;margin:8px 0 10px}.gaugeTitle span:first-child{font-size:34px;font-weight:950;letter-spacing:-.04em}.gaugeTitle span:last-child{font-size:15px;font-weight:950;color:#52657b}.gaugeRail{position:relative;height:24px;border-radius:999px;background:linear-gradient(90deg,#14b86a 0,#a3e635 25%,#facc15 52%,#fb923c 75%,#ef4444 100%);box-shadow:inset 0 0 0 1px rgba(16,32,51,.12)}.gaugeNeedle{position:absolute;top:-5px;width:6px;height:34px;border-radius:999px;background:#102033;box-shadow:0 3px 10px rgba(16,32,51,.35);left:50%;transform:translateX(-50%)}.gaugeScale{display:flex;justify-content:space-between;color:#52657b;font-weight:900;font-size:12px;margin-top:7px}.bestTitle{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.bestTitle h2{margin:0;font-size:24px;letter-spacing:-.03em}.window{display:grid;grid-template-columns:auto 1fr;gap:11px;padding:13px 0;border-top:1px solid #e7eef6}.window:first-child{border-top:0}.rank{width:40px;height:40px;border-radius:15px;background:#e8fff3;color:#0e9f6e;display:grid;place-items:center;font-weight:950}.when{font-size:22px;font-weight:950;letter-spacing:-.03em}.meaning{font-size:16px;margin-top:3px;color:#334e68;line-height:1.28}.priceChip{display:inline-flex;margin-top:8px;border-radius:12px;background:#effaf3;color:#067647;padding:7px 10px;font-size:15px;font-weight:900}.advancedToggle{width:100%;border:0;border-radius:18px;padding:14px 16px;margin:4px 0 0;text-align:left;background:#16243a;color:#fff;font-size:16px;font-weight:900;display:flex;justify-content:space-between;align-items:center}.advanced{display:none;margin-top:10px}.advanced.open{display:block}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{border:1px solid var(--line);background:#fff;border-radius:18px;padding:11px}.field label{display:block;font-size:12px;color:#65758a;font-weight:900;margin-bottom:5px}.field input{width:100%;border:0;outline:0;font-size:24px;font-weight:950;color:var(--ink);background:transparent}.miniGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.mini{border:1px solid var(--line);border-radius:18px;background:#fff;padding:10px}.mini b{display:block;font-size:19px}.mini span{display:block;font-size:12px;color:var(--muted);font-weight:800;margin-top:3px}.chartCard h2{margin:0;font-size:22px;letter-spacing:-.03em}.chartCard p{margin:4px 0 0;color:#52657b;font-size:14px}.chartHead{display:flex;justify-content:space-between;gap:10px;align-items:start}.chartNow{background:#102033;color:#fff;border-radius:999px;padding:8px 10px;font-weight:950;font-size:13px;white-space:nowrap}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.legend span{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:900;color:#405671;background:#f4f8fc;border:1px solid #e0e8f1;border-radius:999px;padding:7px 9px}.leg{width:12px;height:12px;border-radius:4px;display:inline-block}.cheap{background:#2dd47a}.middle{background:#54b6ff}.high{background:#ff6868}.chartWrap{display:grid;grid-template-columns:54px 1fr;gap:8px;align-items:stretch}.yAxis{display:flex;flex-direction:column;justify-content:space-between;align-items:end;text-align:right;color:#52657b;font-size:11px;font-weight:900;padding:2px 0 24px}.yAxis span:nth-child(2){writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:#102033}.chartArea{min-width:0}.chart{height:165px;display:flex;align-items:end;gap:1px;border-radius:20px;background:linear-gradient(180deg,#fff1f1 0,#eef7ff 48%,#eafff4 100%);padding:10px;overflow:hidden;border:1px solid #d8e4ef}.bar{flex:1;min-width:0;border-radius:6px 6px 0 0;background:#54b6ff}.bar.good{background:#2dd47a}.bar.bad{background:#ff6868}.bar.now{box-shadow:0 0 0 2px #102033,0 0 0 5px rgba(255,255,255,.95)}.xAxis{display:flex;justify-content:space-between;gap:8px;color:#52657b;font-size:11px;font-weight:900;padding:6px 4px 0}.xAxis span:nth-child(2){color:#102033}.note{color:var(--muted);font-size:13px;line-height:1.35}.source{font-size:12px;color:#64748b;text-align:center;margin:16px 4px}.source a{color:#0b65d8}#statusLine{font-size:13px;color:#64748b;margin-top:8px}@media(min-width:760px){main{padding-top:18px}.desktopGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}.desktopGrid .card{margin:0}.bestAndAdvanced{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;align-items:start}.priceNumber{font-size:118px}.costLine{font-size:64px}}@media(max-width:420px){main{padding-left:10px;padding-right:10px}.appTop{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{border-radius:24px;padding:14px}.controls{grid-template-columns:1fr 1fr;gap:8px}.miniGrid{grid-template-columns:1fr}.when{font-size:20px}.costText,.plain{font-size:18px}.field input{font-size:22px}.brand{font-size:20px}}
+:root{--bg:#f3f7fb;--ink:#102033;--muted:#637287;--line:#dce6f1;--green:#0e9f6e;--shadow:0 20px 60px rgba(16,32,51,.14)}*{box-sizing:border-box}html{background:#eaf3fb}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,"Segoe UI",sans-serif;background:linear-gradient(180deg,#f8fbff 0,#edf6ff 50%,#f6f8fb 100%);color:var(--ink);min-height:100vh}main{width:min(720px,100%);margin:0 auto;padding:env(safe-area-inset-top) 14px 28px}.appTop{position:sticky;top:0;z-index:5;margin:0 -14px 10px;padding:10px 14px 8px;background:rgba(248,251,255,.9);backdrop-filter:blur(18px);border-bottom:1px solid rgba(220,230,241,.7)}.topLine{display:flex;align-items:center;justify-content:space-between;gap:8px}.brand{display:flex;align-items:center;gap:9px;font-weight:950;font-size:22px;letter-spacing:-.04em}.bolt{width:38px;height:38px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(135deg,#0b65d8,#27c0ff);color:#fff;box-shadow:0 8px 22px rgba(11,101,216,.25)}.pill{appearance:none;font-family:inherit;font-size:12px;font-weight:900;color:var(--green);background:#e8fff3;border:1px solid #baf2d1;border-radius:999px;padding:8px 10px;cursor:pointer;white-space:nowrap}.subtitle{margin:6px 0 0;color:var(--muted);font-size:13px;line-height:1.25}.sheet{position:absolute;right:14px;top:58px;background:#fff;border:1px solid #dce6f1;border-radius:18px;box-shadow:0 18px 44px rgba(16,32,51,.18);padding:6px;display:grid;gap:4px;z-index:10;min-width:190px;max-width:min(360px,calc(100vw - 28px));max-height:calc(100dvh - 76px - env(safe-area-inset-bottom));overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin}.sheet[hidden]{display:none}.sheet button{appearance:none;border:0;background:#fff;color:#102033;text-align:left;border-radius:13px;padding:11px 12px;font-weight:950;font-size:16px}.sheet button.active,.sheet button:hover{background:#eaf4ff;color:#0b65d8}.langWrap{display:flex;gap:6px;margin-top:8px;overflow:auto;padding-bottom:2px}.langBtn{appearance:none;border:1px solid #dce6f1;border-radius:999px;background:#fff;color:#405671;padding:6px 10px;font-weight:950}.langBtn.active{background:#102033;color:#fff}.card{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow);padding:16px;margin:12px 0}.heroCard{background:linear-gradient(180deg,#ffffff 0,#eef8ff 100%)}.label{font-size:13px;font-weight:950;color:#4b6078;text-transform:uppercase;letter-spacing:.06em}.answer{font-weight:950;letter-spacing:-.04em}.priceNow{display:flex;align-items:end;gap:6px;margin-top:5px;min-width:0;flex-wrap:wrap}.priceNumber{font-size:clamp(62px,20vw,126px);line-height:.82;color:#06162b}.priceUnit{font-size:clamp(20px,5.5vw,25px);font-weight:950;margin-bottom:8px;color:#27445f}.plain{font-size:19px;line-height:1.28;margin:12px 0 0;color:#294259}.plain b{color:#07182e}.mood{display:inline-flex;margin-top:12px;border-radius:999px;padding:8px 12px;font-weight:900;font-size:14px}.mood.good{color:#05603a;background:#d9ffe9}.mood.ok{color:#794b05;background:#fff4cc}.mood.bad{color:#991b1b;background:#ffe2e2}.costCard{background:linear-gradient(160deg,#063b73 0,#0b65d8 62%,#13a0dd 100%);color:#fff;border:0}.costCard .label{color:#dbeafe}.costLine{font-size:clamp(34px,10vw,68px);line-height:.95;margin:8px 0 4px}.costText{font-size:20px;line-height:1.25;margin:10px 0 0;color:#eef6ff}.gaugeTitle{display:flex;justify-content:space-between;align-items:end;gap:10px;margin:8px 0 10px}.gaugeTitle span:first-child{font-size:34px;font-weight:950;letter-spacing:-.04em}.gaugeTitle span:last-child{font-size:15px;font-weight:950;color:#52657b}.gaugeRail{position:relative;height:24px;border-radius:999px;background:linear-gradient(90deg,#14b86a 0,#a3e635 25%,#facc15 52%,#fb923c 75%,#ef4444 100%);box-shadow:inset 0 0 0 1px rgba(16,32,51,.12)}.gaugeNeedle{position:absolute;top:-5px;width:6px;height:34px;border-radius:999px;background:#102033;box-shadow:0 3px 10px rgba(16,32,51,.35);left:50%;transform:translateX(-50%)}.gaugeScale{display:flex;justify-content:space-between;color:#52657b;font-weight:900;font-size:12px;margin-top:7px}.bestTitle{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.bestTitle h2{margin:0;font-size:24px;letter-spacing:-.03em}.window{display:grid;grid-template-columns:auto 1fr;gap:11px;padding:13px 0;border-top:1px solid #e7eef6}.window:first-child{border-top:0}.rank{width:40px;height:40px;border-radius:15px;background:#e8fff3;color:#0e9f6e;display:grid;place-items:center;font-weight:950}.when{font-size:22px;font-weight:950;letter-spacing:-.03em}.meaning{font-size:16px;margin-top:3px;color:#334e68;line-height:1.28}.priceChip{display:inline-flex;margin-top:8px;border-radius:12px;background:#effaf3;color:#067647;padding:7px 10px;font-size:15px;font-weight:900}.advancedToggle{width:100%;border:0;border-radius:18px;padding:14px 16px;margin:4px 0 0;text-align:left;background:#16243a;color:#fff;font-size:16px;font-weight:900;display:flex;justify-content:space-between;align-items:center}.advanced{display:none;margin-top:10px}.advanced.open{display:block}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{border:1px solid var(--line);background:#fff;border-radius:18px;padding:11px}.field label{display:block;font-size:12px;color:#65758a;font-weight:900;margin-bottom:5px}.field input{width:100%;border:0;outline:0;font-size:24px;font-weight:950;color:var(--ink);background:transparent}.miniGrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}.mini{border:1px solid var(--line);border-radius:18px;background:#fff;padding:10px}.mini b{display:block;font-size:19px}.mini span{display:block;font-size:12px;color:var(--muted);font-weight:800;margin-top:3px}.chartCard h2{margin:0;font-size:22px;letter-spacing:-.03em}.chartCard p{margin:4px 0 0;color:#52657b;font-size:14px}.chartHead{display:flex;justify-content:space-between;gap:10px;align-items:start}.chartNow{background:#102033;color:#fff;border-radius:999px;padding:8px 10px;font-weight:950;font-size:13px;white-space:nowrap}.legend{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.legend span{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:900;color:#405671;background:#f4f8fc;border:1px solid #e0e8f1;border-radius:999px;padding:7px 9px}.leg{width:12px;height:12px;border-radius:4px;display:inline-block}.cheap{background:#2dd47a}.middle{background:#54b6ff}.high{background:#ff6868}.chartWrap{display:grid;grid-template-columns:54px 1fr;gap:8px;align-items:stretch}.yAxis{display:flex;flex-direction:column;justify-content:space-between;align-items:end;text-align:right;color:#52657b;font-size:11px;font-weight:900;padding:2px 0 24px}.yAxis span:nth-child(2){writing-mode:vertical-rl;transform:rotate(180deg);font-size:12px;color:#102033}.chartArea{min-width:0}.chart{height:165px;display:flex;align-items:end;gap:1px;border-radius:20px;background:linear-gradient(180deg,#fff1f1 0,#eef7ff 48%,#eafff4 100%);padding:10px;overflow:hidden;border:1px solid #d8e4ef}.bar{flex:1;min-width:0;border-radius:6px 6px 0 0;background:#54b6ff}.bar.good{background:#2dd47a}.bar.bad{background:#ff6868}.bar.now{box-shadow:0 0 0 2px #102033,0 0 0 5px rgba(255,255,255,.95)}.xAxis{display:flex;justify-content:space-between;gap:8px;color:#52657b;font-size:11px;font-weight:900;padding:6px 4px 0}.xAxis span:nth-child(2){color:#102033}.note{color:var(--muted);font-size:13px;line-height:1.35}.source{font-size:12px;color:#64748b;text-align:center;margin:16px 4px}.source a{color:#0b65d8}#statusLine{font-size:13px;color:#64748b;margin-top:8px}@media(min-width:760px){main{padding-top:18px}.desktopGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch}.desktopGrid .card{margin:0}.bestAndAdvanced{display:grid;grid-template-columns:1.05fr .95fr;gap:14px;align-items:start}.priceNumber{font-size:118px}.costLine{font-size:64px}}@media(max-width:420px){main{padding-left:10px;padding-right:10px}.appTop{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{border-radius:24px;padding:14px}.controls{grid-template-columns:1fr 1fr;gap:8px}.miniGrid{grid-template-columns:1fr}.when{font-size:20px}.costText,.plain{font-size:18px}.field input{font-size:22px}.brand{font-size:20px}}
 </style>
 </head>
 <body>
@@ -236,7 +261,7 @@ function renderData(data){
   const kwhPrice = Number(cur.price || 0) / 1000; const minKwh = Number(data.min?.price || 0) / 1000; const maxKwh = Number(data.max?.price || 0) / 1000; const avgKwh = Number(run.avgPrice || 0) / 1000;
   $('price').textContent = kwhPrice.toFixed(3); $('pricePlain').innerHTML = '<b>'+tr('priceNow', mName)+'</b> ' + kwhPrice.toFixed(3) + ' ' + tr('for1');
   $('badge').textContent = moodText(cur.price); $('badge').className = 'mood ' + moodClass(cur.price);
-  const bm = data.benchmarks || {}; const pct = Number.isFinite(Number(bm.percentile12m)) ? Math.max(0, Math.min(100, Number(bm.percentile12m))) : 50;
+  const bm = data.benchmarks || {}; const pct = Number.isFinite(Number(bm.percentile12m)) && Number(bm.sample12m) ? Math.max(0, Math.min(100, Number(bm.percentile12m))) : 50;
   $('gaugeLabel').textContent = tr(bm.label || 'normal'); $('gaugePct').textContent = tr('higher', Math.round(pct)); $('gaugeNeedle').style.left = pct + '%'; $('gaugePlain').innerHTML = tr('sameAvg', Number(bm.avg3mKwh || 0).toFixed(3), Number(bm.avg12mKwh || 0).toFixed(3));
   $('costNow').innerHTML = fmtMoney(run.total) + ' €'; $('costPlain').innerHTML = tr('cost', {kw:fmtOne(opts.powerKw), hours:wordsForHours(opts.durationHours), cost:fmtMoney(run.total)});
   $('minp').textContent = minKwh.toFixed(3) + ' €/kWh'; $('avgp').textContent = avgKwh.toFixed(3) + ' €/kWh'; $('maxp').textContent = maxKwh.toFixed(3) + ' €/kWh';
@@ -252,12 +277,25 @@ async function load(){
   localizeStatic();
   const params = new URLSearchParams({area:selectedMarket,kw:$('kw').value,duration:$('duration').value,adders:$('adders').value,vat:$('vat').value});
   try{
+    params.set('quick','1');
     const res = await fetch('/api/prices?' + params);
     const data = await res.json();
     if(!data.ok){ if(data.error === 'market_not_live_yet'){ window.lastData = data; const mName = marketName(data.area || selectedMarket); $('badge').textContent = tr('notLive'); $('badge').className = 'mood ok'; $('price').textContent = '—'; $('pricePlain').textContent = tr('notLiveDetail', mName); $('windows').innerHTML = '<div class="note">'+tr('notLiveDetail', mName)+'</div>'; return; } throw new Error(data.error || 'Price load failed'); }
     window.lastData = data;
     renderData(data);
+    scheduleFullRefresh();
   }catch(err){ $('badge').textContent = tr('couldNot'); $('badge').className = 'mood bad'; $('pricePlain').textContent = tr('refresh'); }
+}
+async function scheduleFullRefresh(){
+  clearTimeout(window.fullRefreshTimer);
+  window.fullRefreshTimer = setTimeout(async()=>{
+    const params = new URLSearchParams({area:selectedMarket,kw:$('kw').value,duration:$('duration').value,adders:$('adders').value,vat:$('vat').value});
+    try{
+      const res = await fetch('/api/prices?' + params);
+      const data = await res.json();
+      if(data.ok && data.area === selectedMarket){ window.lastData = data; renderData(data); }
+    }catch{}
+  }, 60);
 }
 $('marketBtn').addEventListener('click',()=>{ $('marketSheet').hidden = !$('marketSheet').hidden; });
 document.addEventListener('click', e => { if(!$('marketSheet').hidden && !e.target.closest('#marketSheet') && !e.target.closest('#marketBtn')) $('marketSheet').hidden = true; });
