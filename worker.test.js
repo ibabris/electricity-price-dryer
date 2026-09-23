@@ -47,9 +47,19 @@ test('Nord Pool market setup connects every API-supported market and hides unsup
   assert.match(html, /MARKETS\[selectedMarket\]\.lang/);
 });
 
-test('supported languages are registered and remembered',()=>{
+test('supported languages have a short site slogan and are remembered',()=>{
   const html = readFileSync(new URL('./worker.js', import.meta.url), 'utf8');
   for (const code of ['lv','ee','lt','ru','en']) assert.match(html, new RegExp(`${code}:`));
+  for (const slogan of [
+    'Live electricity prices and cheaper usage times.',
+    'Dzīvās elektrības cenas un lētākie lietošanas laiki.',
+    'Gyvos elektros kainos ir pigesnis vartojimo laikas.',
+    'Reaalajas elektrihinnad ja odavamad kasutusajad.',
+    'Живые цены на электричество и более дешёвые часы.'
+  ]) {
+    assert.ok(html.includes(`subtitle:'${slogan}'`));
+    assert.ok(slogan.length <= 64);
+  }
   assert.match(html, /const LANGS = \{lv:'LV',ee:'EE',lt:'LT',ru:'RU',en:'EN'\}/);
   assert.match(html, /localStorage\.getItem\('lang'\)/);
   assert.match(html, /localStorage\.setItem\('lang'/);
