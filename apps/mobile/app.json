@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Elektoprice.lv",
+    "slug": "elektoprice-mobile",
+    "version": "1.0.0",
+    "runtimeVersion": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "elektoprice",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-splash-screen",
+      "expo-status-bar",
+      "expo-font"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ibabris.elektoprice",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false
+        },
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.ibabris.elektoprice",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b65d8"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "elektoprice.lv"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "extra": {
+      "apiBaseUrl": "https://electricity-price-dryer-lns56.ondigitalocean.app",
+      "publicSiteUrl": "https://elektoprice.lv",
+      "eas": {
+        "projectId": "07e31062-000e-4804-8431-053fdfdf07c9"
+      }
+    },
+    "owner": "ibabris"
+  }
+}
