@@ -36,7 +36,7 @@ def round_rect(draw, box, r, fill, outline=None, width=1):
     draw.rounded_rectangle(box, radius=r, fill=fill, outline=outline, width=width)
 
 
-def gradient(size, c1=(248,251,255), c2=(237,246,255)):
+def gradient(size, c1=(248,251,255), c2=(246,250,255)):
     w,h=size
     im=Image.new('RGB',size)
     px=im.load()
@@ -84,7 +84,7 @@ def app_header(draw, im, x, y, w, scale=1):
 
 def phone_frame(base, left, top, width, height, content_fn):
     d=ImageDraw.Draw(base)
-    base.alpha_composite(shadow_layer(base.size, [left+10,top+18,left+width+10,top+height+18], 95, 70, 40))
+    base.alpha_composite(shadow_layer(base.size, [left+8,top+12,left+width+8,top+height+12], 95, 38, 16))
     round_rect(d, [left,top,left+width,top+height], 96, '#f8fbff', '#d9e7f4', 3)
     # dynamic island
     round_rect(d, [left+width//2-115, top+34, left+width//2+115, top+70], 22, '#0b1526')
@@ -196,10 +196,12 @@ def make_store_image(name, title, subtitle, ui_fn, size=(W,H)):
     im=gradient(size)
     d=ImageDraw.Draw(im)
     # background brand blobs
-    blob=Image.new('RGBA',size,(0,0,0,0)); bd=ImageDraw.Draw(blob)
-    bd.ellipse([w-520,-220,w+260,540],fill=(39,192,255,90))
-    bd.ellipse([-260,h-650,560,h+150],fill=(11,101,216,70))
-    im=Image.alpha_composite(im, blob.filter(ImageFilter.GaussianBlur(12)))
+    # Clean, non-foggy App Store artwork: crisp flat background with solid brand accents.
+    accent=Image.new('RGBA',size,(0,0,0,0)); ad=ImageDraw.Draw(accent)
+    ad.rectangle([0,0,w,22], fill=(11,101,216,255))
+    ad.rounded_rectangle([w-390,76,w-90,96], radius=10, fill=(39,192,255,210))
+    ad.rounded_rectangle([90,h-145,w-90,h-125], radius=10, fill=(11,101,216,170))
+    im=Image.alpha_composite(im, accent)
     d=ImageDraw.Draw(im)
     d.text((90,92),title,font=font(78,True),fill=INK)
     wrapped(d,subtitle,(94,190),w-188,font(38),MUTED,12,2)
