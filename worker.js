@@ -136,6 +136,7 @@ function privacyPage(){ return new Response(PRIVACY_HTML, { headers:{ 'content-t
 export default { async fetch(request){
   const url = new URL(request.url);
   if(url.pathname === '/privacy') return privacyPage();
+  if(url.pathname === '/api/config') return json({ ok:true, apiBase:url.origin, refreshMs:60000, slotMs:900000, source:SOURCE });
   if(url.pathname === '/api/prices'){
     try { const area = normalizeArea(url.searchParams.get('area')); const quick = url.searchParams.get('quick') === '1'; const rows = await fetchPrices(area); const [hist90, hist365] = quick ? [[], []] : await Promise.all([fetchHistory(90, area), fetchHistory(365, area)]); return json(apiPayload(rows, url, hist90, hist365)); }
     catch(err){ const area = normalizeArea(url.searchParams.get('area')); const status = String(err.message||err) === 'market_not_live_yet' ? 501 : 502; return json({ ok:false, error:String(err.message||err), sourceUrl:SOURCE, area, market:MARKETS[area], markets:MARKETS }, status); }
@@ -273,6 +274,7 @@ function renderLangs(){
   $('langWrap').innerHTML = Object.entries(LANGS).map(([code,label]) => '<button class="langBtn '+(code===lang?'active':'')+'" data-lang="'+code+'">'+label+'</button>').join('');
   document.querySelectorAll('[data-lang]').forEach(btn => btn.addEventListener('click',()=>{ lang = btn.dataset.lang; localStorage.setItem('lang', lang); localizeStatic(); if(window.lastData) renderData(window.lastData); }));
 }
+function patchHTML(el, html){ if(!el) return; if(el.__lastHTML === html) return; el.__lastHTML = html; el.innerHTML = html; }
 function renderData(data){
   localizeStatic();
   activeTimezone = data.timezone || MARKETS[data.area || selectedMarket]?.timezone || activeTimezone;
@@ -285,15 +287,15 @@ function renderData(data){
   $('costNow').innerHTML = fmtMoney(run.total) + ' €'; $('costPlain').innerHTML = tr('cost', {kw:fmtOne(opts.powerKw), hours:wordsForHours(opts.durationHours), cost:fmtMoney(run.total)});
   $('minp').textContent = minKwh.toFixed(3) + ' €/kWh'; $('avgp').textContent = avgKwh.toFixed(3) + ' €/kWh'; $('maxp').textContent = maxKwh.toFixed(3) + ' €/kWh';
   $('costBreakdown').textContent = tr('breakdown', {hours:wordsForHours(opts.durationHours), kw:fmtOne(opts.powerKw), energy:Number(run.energyKwh || 0).toFixed(2), market:fmtMoney(run.market), adders:fmtMoney(run.adders)});
-  $('windows').innerHTML = (data.best || []).slice(0,4).map((w,i) => '<div class="window"><div class="rank">' + (i+1) + '</div><div><div class="when">' + range(w.start,w.end) + '</div><div class="meaning">' + tr('runThen',{hours:wordsForHours(opts.durationHours), cost:fmtMoney(w.total)}) + '</div><div class="priceChip">' + tr('priceThen',(Number(w.avgPrice || 0)/1000).toFixed(3)) + '</div></div></div>').join('');
+  patchHTML($('windows'), (data.best || []).slice(0,4).map((w,i) => '<div class="window"><div class="rank">' + (i+1) + '</div><div><div class="when">' + range(w.start,w.end) + '</div><div class="meaning">' + tr('runThen',{hours:wordsForHours(opts.durationHours), cost:fmtMoney(w.total)}) + '</div><div class="priceChip">' + tr('priceThen',(Number(w.avgPrice || 0)/1000).toFixed(3)) + '</div></div></div>').join(''));
   const rows = data.rows || []; const df = dayFmt(activeTimezone); const today = df.format(new Date()); const chartRows = rows.filter(r => df.format(new Date(r.timestamp*1000)) === today); const useRows = chartRows.length ? chartRows : rows;
   const vals = useRows.map(r=>r.price); const min = Math.min(...vals); const max = Math.max(...vals); const nowTs = cur.timestamp;
-  $('chart').innerHTML = useRows.map(r=>{ const h = 12 + Math.round(((r.price - min) / Math.max(1,max-min)) * 146); const cls = (r.timestamp === nowTs ? ' now' : '') + (r.price < 90 ? ' good' : r.price > 220 ? ' bad' : ''); return '<div class="bar' + cls + '" style="height:' + h + 'px" title="' + range(r.timestamp,r.timestamp+900) + ': ' + (Number(r.price||0)/1000).toFixed(3) + ' €/kWh"></div>'; }).join('');
+  patchHTML($('chart'), useRows.map(r=>{ const h = 12 + Math.round(((r.price - min) / Math.max(1,max-min)) * 146); const cls = (r.timestamp === nowTs ? ' now' : '') + (r.price < 90 ? ' good' : r.price > 220 ? ' bad' : ''); return '<div class="bar' + cls + '" style="height:' + h + 'px" title="' + range(r.timestamp,r.timestamp+900) + ': ' + (Number(r.price||0)/1000).toFixed(3) + ' €/kWh"></div>'; }).join(''));
   $('xStart').textContent = chartRows.length ? '00:00' : '—'; $('xEnd').textContent = chartRows.length ? '24:00' : '—'; $('yHigh').textContent = (max/1000).toFixed(3) + ' €/kWh'; $('yLow').textContent = (min/1000).toFixed(3) + ' €/kWh'; $('chartNow').textContent = tr('now') + ' ' + timeFmt(activeTimezone).format(new Date());
   $('statusLine').textContent = tr('updated', new Date(data.updatedAt).toLocaleString('en-GB',{timeZone:activeTimezone}));
 }
-async function load(){
-  localizeStatic();
+async function load(silent){
+  if(!silent) localizeStatic();
   const params = new URLSearchParams({area:selectedMarket,kw:$('kw').value,duration:$('duration').value,adders:$('adders').value,vat:$('vat').value});
   try{
     params.set('quick','1');
@@ -303,7 +305,10 @@ async function load(){
     window.lastData = data;
     renderData(data);
     scheduleFullRefresh();
-  }catch(err){ $('badge').textContent = tr('couldNot'); $('badge').className = 'mood bad'; $('pricePlain').textContent = tr('refresh'); }
+  }catch(err){
+    if(!silent || !window.lastData){ $('badge').textContent = tr('couldNot'); $('badge').className = 'mood bad'; $('pricePlain').textContent = tr('refresh'); }
+    else { $('statusLine').textContent = tr('refresh'); }
+  }
 }
 async function scheduleFullRefresh(){
   clearTimeout(window.fullRefreshTimer);
@@ -319,8 +324,8 @@ async function scheduleFullRefresh(){
 $('marketBtn').addEventListener('click',()=>{ $('marketSheet').hidden = !$('marketSheet').hidden; });
 document.addEventListener('click', e => { if(!$('marketSheet').hidden && !e.target.closest('#marketSheet') && !e.target.closest('#marketBtn')) $('marketSheet').hidden = true; });
 $('advancedBtn').addEventListener('click',()=>{ const box=$('advanced'); const open=!box.classList.contains('open'); box.classList.toggle('open',open); $('advancedState').textContent = open ? tr('hide') : tr('show'); });
-['kw','duration','adders','vat'].forEach(id => $(id).addEventListener('input',()=>{ clearTimeout(window.t); window.t=setTimeout(load,180); }));
-load(); setInterval(load,60000);
+['kw','duration','adders','vat'].forEach(id => $(id).addEventListener('input',()=>{ clearTimeout(window.t); window.t=setTimeout(()=>load(false),180); }));
+load(); setInterval(()=>load(true),60000);
 </script>
 </body>
 </html>`;

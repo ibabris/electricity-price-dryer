@@ -1,8 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, Modal, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-const API_BASE = 'https://elektroprice.lv';
+// The app ships with one bootstrap host. Everything else (the API host itself, the poll interval) is
+// resolved at runtime from /api/config, so moving the backend does not require a new App Store build.
+const BOOTSTRAP_BASE = 'https://elektroprice.lv';
+const runtime = { apiBase: BOOTSTRAP_BASE, refreshMs: 60000 };
+async function resolveRuntimeConfig() {
+  try {
+    const res = await fetch(`${BOOTSTRAP_BASE}/api/config`, { cache: 'no-store' });
+    const cfg = await res.json();
+    if (cfg && typeof cfg.apiBase === 'string' && /^https:\/\//.test(cfg.apiBase)) runtime.apiBase = cfg.apiBase;
+    if (cfg && Number(cfg.refreshMs) >= 15000) runtime.refreshMs = Number(cfg.refreshMs);
+  } catch (e) {}
+  return runtime;
+}
 const LANGS = { lv: 'LV', ee: 'EE', lt: 'LT', ru: 'RU', en: 'EN' };
 const TIMEZONE_MARKET = { 'Europe/Riga':'lv', 'Europe/Vilnius':'lt', 'Europe/Tallinn':'ee', 'Europe/Helsinki':'fi', 'Europe/Oslo':'no1', 'Europe/Stockholm':'se3', 'Europe/Copenhagen':'dk1', 'Europe/Amsterdam':'nl', 'Europe/Brussels':'be', 'Europe/Vienna':'at', 'Europe/Paris':'fr', 'Europe/Warsaw':'pl' };
 function detectInitialArea(){ const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; return TIMEZONE_MARKET[tz] || 'lv'; }
@@ -54,7 +66,7 @@ export default function App(){
     try {
       const params = new URLSearchParams({ area, kw, duration, adders, vat });
       if(!full) params.set('quick', '1');
-      const res = await fetch(`${API_BASE}/api/prices?${params.toString()}`);
+      const res = await fetch(`${runtime.apiBase}/api/prices?${params.toString()}`);
       const json = await res.json();
       if(!json.ok) throw new Error(json.error || 'api_error');
       if(seq !== refreshSeq.current && !full) return;
@@ -64,7 +76,16 @@ export default function App(){
     finally { setLoading(false); }
   }, [area, kw, duration, adders, vat, tr.refresh]);
   useEffect(() => { const m = markets[area] || selected; setVat(String(m.vatPct ?? 21)); setAdders(String(m.addersEurPerKwh ?? 0.16)); if(!manualLang) setLang(m.lang || 'en'); }, [area, markets, manualLang]);
-  useEffect(() => { load(false); const t = setInterval(() => load(false), 60000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    let timer = null; let cancelled = false;
+    resolveRuntimeConfig().then(() => {
+      if (cancelled) return;
+      load(false);
+      timer = setInterval(() => load(false), runtime.refreshMs);
+    });
+    const sub = AppState.addEventListener('change', (state) => { if (state === 'active') load(false); });
+    return () => { cancelled = true; if (timer) clearInterval(timer); sub.remove(); };
+  }, [load]);
   const current = data?.current || {}; const opts = data?.opts || {}; const run = data?.currentRun || {};
   const priceKwh = Number(current.price || 0) / 1000;
   // A failed fetch must never render as a price. Zero or missing data is "unavailable", not "cheap".
