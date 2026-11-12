@@ -1,4 +1,11 @@
-# Elektoprice.lv — realtime electricity helper
+# Elektroprice.lv
+
+**Product:** Elektroprice.lv — live Nord Pool day-ahead electricity prices for Latvia, Lithuania, Estonia and Finland.
+**Repository alias:** this project is also referenced as `elektroprice-lv`; the repository keeps its historical
+name `electricity-price-dryer` so existing links and deployments keep working.
+**App Store display name:** `Elektoprice.lv` (spelling drift against the domain `elektroprice.lv` — to be unified).
+
+---
 
 Cloudflare Worker website that shows electricity exchange prices, estimates a dryer run, and recommends cheapest upcoming drying windows.
 
