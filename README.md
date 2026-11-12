@@ -16,7 +16,9 @@ API — and `server.js` runs it unchanged on Node, so no rewrite is needed off C
 cd public/sites/elektroprice/api && PORT=8100 node server.js
 ```
 
-Full runbook: **[docs/HOSTING.md](docs/HOSTING.md)** — directory layout, LaunchAgent, tunnel creation, DNS
+Full runbook: **[docs/HOSTING.md](docs/HOSTING.md)**.
+Migration record — what ran where before, what broke, every local and DNS change: **[docs/MIGRATION.md](docs/MIGRATION.md)**.
+Release history: **[docs/RELEASES.md](docs/RELEASES.md)**. — directory layout, LaunchAgent, tunnel creation, DNS
 recovery after the DigitalOcean zone loss, verification commands, and the operating constraints (carrier NAT,
 quarter-hour slots, no CORS on the upstream feed).
 

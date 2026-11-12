@@ -1,5 +1,8 @@
 # Hosting and deployment
 
+> History of this setup — the DigitalOcean dependency, the lost DNS zone, and every change made to this machine —
+> is in **[MIGRATION.md](MIGRATION.md)**. Release history is in **[RELEASES.md](RELEASES.md)**.
+
 How Elektroprice.lv runs, from the machine that serves it to the DNS that makes it reachable, plus the exact
 steps to bring the domain back after it stopped resolving.
 
