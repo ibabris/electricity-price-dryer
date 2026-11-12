@@ -188,3 +188,37 @@ Two operational notes learned here:
 - **A stale NXDOMAIN can outlive the fix on the host itself.** After the zone was created, `curl` on the Mac
   still failed to resolve `elektroprice.lv` while public resolvers answered correctly. `dscacheutil -flushcache &&
   sudo killall -HUP mDNSResponder` clears it; the site was never actually down.
+
+## 10. Source layout, deploys and SSD backups
+
+Hosting root: `/Volumes/HermesRuntime/public` (see its `README.md` for the full map).
+
+```
+public/
+├── src/electricity-price-dryer     the git checkout you edit and push from (persistent, not /tmp)
+├── sites/elektroprice/api          the running copy, supervised by launchd on port 8100
+├── bin/deploy.sh                   src → sites, then restart and health-check
+├── bin/backup-ssd.sh               emergency snapshot to the external SSD
+└── docs/                           runbooks
+```
+
+Deploy a change:
+
+```bash
+bin/deploy.sh elektroprice electricity-price-dryer   # copies, restarts, asserts HTTP 200
+```
+
+Never edit files in `sites/` — the next deploy overwrites them.
+
+Backups: GitHub is the primary copy; the SSD at `/Volumes/Ivo S7/Backup/hermes-public/<timestamp>/` is the
+emergency copy, used only when GitHub is unavailable. Each snapshot holds `bundles/<repo>.bundle` (full history,
+restorable with `git clone <file>.bundle`), `hosting-config.tar.gz` (registry, agents, tunnel config, docs,
+databases), `deployed/<slug>/` (the exact running code), `secrets/` (mode 600, for rebuilding the tunnel and
+submitting builds) and `SHA256SUMS`. Retention is the last 8 snapshots; a daily 03:00 job runs it.
+
+Two things learned while proving the backup works:
+
+- **A bundle from a shallow clone cannot be restored** — `git clone` fails with "Failed to traverse parents".
+  `backup-ssd.sh` now warns when a checkout is shallow; fix with `git fetch --unshallow`.
+- **Verify by restoring, not by looking.** The check that counts is `git clone` from the bundle plus
+  `tar -xzf hosting-config.tar.gz`, then comparing the extracted `worker.js` hash with the deployed one.
