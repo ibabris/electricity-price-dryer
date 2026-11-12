@@ -162,3 +162,26 @@ something unrelated holds the port.
   the cost of duplicating the tariff and window logic.)
 - Slots are **quarter-hourly** (96 per day), not hourly. Any code that assumes 60-minute slots will misprice the
   cheapest-window calculation.
+
+## 9. Live configuration (2026-11-12)
+
+| Item | Value |
+| --- | --- |
+| Zone | `elektroprice.lv`, active on Cloudflare, nameservers `chance.ns.cloudflare.com` / `savanna.ns.cloudflare.com` |
+| Tunnel | `elektroprice`, id `dafee593-8237-4116-9aa0-d18f68b4c613` |
+| DNS | `CNAME @` and `CNAME www` → `dafee593-8237-4116-9aa0-d18f68b4c613.cfargotunnel.com`, proxied |
+| Ingress | both hostnames → `http://localhost:8100`, catch-all `http_status:404` |
+| Edge TLS | Let's Encrypt via Cloudflare Universal SSL (valid to 2027-02-10), SSL mode `Full`, HTTP → HTTPS 301 |
+| Connector | `com.cloudflare.cloudflared` system daemon, token in `/Library/Application Support/com.cloudflare.cloudflared/token` |
+| Site | LaunchAgent `lv.elektroprice.api`, `node server.js`, port 8100 |
+
+Verified from outside: apex `200`, `www` `200`, `/api/prices?area=lv` → `ok:true`, `0.15 €/kWh`, 192 quarter-hour slots.
+
+Two operational notes learned here:
+
+- **The connector logs `control stream error: context deadline exceeded` and re-registers.** On a Starlink link
+  (and with IPv6 paths) QUIC through the tunnel is unstable; if requests start resetting intermittently, pin the
+  connector to `--protocol http2` in the daemon arguments rather than blaming the origin.
+- **A stale NXDOMAIN can outlive the fix on the host itself.** After the zone was created, `curl` on the Mac
+  still failed to resolve `elektroprice.lv` while public resolvers answered correctly. `dscacheutil -flushcache &&
+  sudo killall -HUP mDNSResponder` clears it; the site was never actually down.
