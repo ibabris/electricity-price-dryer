@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Elektoprice.lv",
+    "name": "ElektroPrice",
     "slug": "elektoprice-mobile",
     "version": "1.0.1",
     "runtimeVersion": "1.0.0",
@@ -19,7 +19,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ibabris.elektoprice",
-      "buildNumber": "8",
+      "buildNumber": "9",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": false
