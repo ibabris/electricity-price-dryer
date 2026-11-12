@@ -52,8 +52,8 @@
       ]
     },
     "extra": {
-      "apiBaseUrl": "https://electricity-price-dryer-lns56.ondigitalocean.app",
-      "publicSiteUrl": "https://elektoprice.lv",
+      "apiBaseUrl": "https://elektroprice.lv",
+      "publicSiteUrl": "https://elektroprice.lv",
       "eas": {
         "projectId": "07e31062-000e-4804-8431-053fdfdf07c9"
       }

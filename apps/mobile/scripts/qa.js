@@ -13,7 +13,7 @@ const slogans = [
 ];
 for (const slogan of slogans) assert.ok(app.includes(slogan), `missing slogan ${slogan}`);
 for (const code of ['lv','lt','ee','fi','no1','se4','dk2','nl','be','at','fr','pl']) {
-  const res = await fetch(`https://electricity-price-dryer-lns56.ondigitalocean.app/api/prices?quick=1&area=${code}`);
+  const res = await fetch(`https://elektroprice.lv/api/prices?quick=1&area=${code}`);
   const json = await res.json();
   assert.equal(json.ok, true, `live API ${code}`);
   assert.ok(json.current?.price > 0, `current price ${code}`);
@@ -21,7 +21,7 @@ for (const code of ['lv','lt','ee','fi','no1','se4','dk2','nl','be','at','fr','p
 assert.equal(appJson.expo.name, 'Elektoprice.lv');
 assert.equal(appJson.expo.ios.bundleIdentifier, 'com.ibabris.elektoprice');
 assert.equal(appJson.expo.android.package, 'com.ibabris.elektoprice');
-assert.equal(appJson.expo.extra.apiBaseUrl, 'https://electricity-price-dryer-lns56.ondigitalocean.app');
+assert.equal(appJson.expo.extra.apiBaseUrl, 'https://elektroprice.lv');
 assert.ok(app.includes('Modal'));
 assert.ok(app.includes('ScrollView'));
 assert.ok(app.includes('setTimeout(() => load(true), 80)'));
