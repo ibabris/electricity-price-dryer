@@ -1,0 +1,12 @@
+# Cloudflare Tunnel config for the Mac mini.
+# Replace TUNNEL-ID and the credentials filename after: cloudflared tunnel create elektroprice
+tunnel: TUNNEL-ID
+credentials-file: /Volumes/HermesRuntime/public/tunnels/TUNNEL-ID.json
+no-autoupdate: true
+
+ingress:
+  - hostname: elektroprice.lv
+    service: http://127.0.0.1:8100
+  - hostname: www.elektroprice.lv
+    service: http://127.0.0.1:8100
+  - service: http_status:404

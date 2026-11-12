@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>lv.elektroprice.api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>server.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Volumes/HermesRuntime/public/sites/elektroprice/api</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key><string>8100</string>
+    <key>NODE_ENV</key><string>production</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Volumes/HermesRuntime/public/sites/elektroprice/logs/api.log</string>
+  <key>StandardErrorPath</key><string>/Volumes/HermesRuntime/public/sites/elektroprice/logs/api.err.log</string>
+</dict>
+</plist>
